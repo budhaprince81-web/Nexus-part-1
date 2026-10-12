@@ -12,6 +12,9 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { ArcReactor, MiniArcRing } from '@/components/hud/arc-reactor';
+import { ProviderStatusPanel } from '@/components/hud/provider-status';
+import { JarvisPanel } from '@/components/hud/jarvis-panel';
+import { AgentOpsPanel } from '@/components/hud/agent-ops';
 import { VoiceWaveform } from '@/components/hud/voice-indicator';
 import { useVoice } from '@/hooks/use-voice';
 import { useLangContext } from '@/hooks/use-language';
@@ -351,6 +354,13 @@ export default function Dashboard() {
             </AnimatePresence>
           </div>
         </CyberPanel>
+      </div>
+
+      {/* ===== CONTROL ROW: agent ops · JARVIS · providers ===== */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+        <AgentOpsPanel />
+        <JarvisPanel />
+        <ProviderStatusPanel compact />
       </div>
 
       {/* ===== BOTTOM: Live Log Feed ===== */}

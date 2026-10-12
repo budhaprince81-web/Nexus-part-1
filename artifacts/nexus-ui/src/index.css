@@ -176,3 +176,70 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 212, 255, 0.5);
 }
+/* ==========================================================================
+   2050 interface: ambient layers, motion preferences and low-resource mode
+   ========================================================================== */
+
+/* Faint lattice used behind the boot sequence and hero panels. */
+.grid-lattice {
+  background-image:
+    linear-gradient(rgba(0, 212, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at 50% 45%, rgba(0, 0, 0, 0.9), transparent 72%);
+}
+
+@keyframes core-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes core-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.97); }
+  50% { opacity: 1; transform: scale(1.03); }
+}
+
+.cyber-panel {
+  /* Layered translucent glass: a soft top highlight plus a cyan inner edge. */
+  background:
+    linear-gradient(180deg, rgba(0, 212, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    rgba(9, 14, 26, 0.55);
+}
+
+/* --- Accessibility: honour the OS reduced-motion setting everywhere ------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* --- Explicit reduced motion chosen in Settings --------------------------- */
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* --- Low-resource mode: keep the HUD readable on weak devices -------------- */
+html[data-low-resource="true"] .nexus-particles,
+html[data-low-resource="true"] .nexus-ambient {
+  display: none !important;
+}
+
+html[data-low-resource="true"] .cyber-panel {
+  backdrop-filter: none;
+  background: rgba(9, 14, 26, 0.92);
+}
+
+html[data-low-resource="true"] .scanlines::after {
+  display: none;
+}
+
+html[data-low-resource="true"] .cyber-glow {
+  box-shadow: none;
+}

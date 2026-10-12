@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
-import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
+import { complete, extractJson, hasConfiguredProvider } from "../../ai/index.ts";
+import { respondAiError } from "../ai-error.ts";
 import { db, agentPlans } from "@workspace/db";
 import {
   CreateAgentPlanBody,
@@ -62,10 +63,13 @@ router.post("/nexus/agents/plan", async (req, res): Promise<void> => {
     return;
   }
 
-  if (!isAnthropicConfigured()) {
+  if (!hasConfiguredProvider()) {
     res.status(503).json({
       error:
-        "Planner agent is unavailable: ANTHROPIC_API_KEY is not configured on the server.",
+        "Planner agent is unavailable: no AI provider is configured on the server. " +
+        "Add ANTHROPIC_API_KEY, GROQ_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or " +
+        "OPENROUTER_API_KEY in Replit Secrets.",
+      code: "no_provider_configured",
     });
     return;
   }
@@ -99,34 +103,47 @@ Respond ONLY with valid JSON in this exact format:
 
 Keep steps concise. Use 3-7 steps. Never include markdown or explanation outside the JSON.`;
 
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8192,
+    const completion = await complete({
+      content: `Task: ${parsed.data.task}${
+        parsed.data.context ? `\n\nContext: ${parsed.data.context}` : ""
+      }`,
       system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: `Task: ${parsed.data.task}${parsed.data.context ? `\n\nContext: ${parsed.data.context}` : ""}`,
-        },
-      ],
+      maxTokens: 4096,
+      tier: "balanced",
+      temperature: 0.2,
     });
 
-    const block = message.content[0];
-    if (block.type !== "text") throw new Error("No text block in response");
+    const planData = extractJson<{ steps?: unknown[] }>(completion.text);
+    if (!planData || !Array.isArray(planData.steps) || planData.steps.length === 0) {
+      throw new Error("Planner could not produce a valid JSON plan");
+    }
 
-    let planData: { steps: unknown[] };
-    try {
-      const jsonMatch = block.text.match(/\{[\s\S]*\}/);
-      planData = JSON.parse(jsonMatch ? jsonMatch[0] : block.text);
-    } catch {
-      throw new Error("Invalid JSON from planner");
+    // Model output is external input: normalise it to the response contract so
+    // a missing field degrades gracefully instead of failing the whole request.
+    const steps = planData.steps
+      .map((raw, index) => {
+        const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+        return {
+          id: typeof record.id === "string" && record.id ? record.id : `step-${index + 1}`,
+          agent: typeof record.agent === "string" && record.agent ? record.agent : "Analysis",
+          description: typeof record.description === "string" ? record.description : "",
+          status: typeof record.status === "string" ? record.status : "pending",
+          dependsOn: Array.isArray(record.dependsOn)
+            ? record.dependsOn.filter((value): value is string => typeof value === "string")
+            : [],
+        };
+      })
+      .filter((step) => step.description !== "");
+
+    if (steps.length === 0) {
+      throw new Error("Planner produced no usable steps");
     }
 
     const planId = randomUUID();
     await db.insert(agentPlans).values({
       id: planId,
       task: parsed.data.task,
-      steps: planData.steps,
+      steps,
       status: "planned",
     });
 
@@ -143,14 +160,13 @@ Keep steps concise. Use 3-7 steps. Never include markdown or explanation outside
       CreateAgentPlanResponse.parse({
         id: planId,
         task: parsed.data.task,
-        steps: planData.steps,
+        steps,
         createdAt: new Date().toISOString(),
       }),
     );
   } catch (err) {
     markAgentIdle("Planner");
-    req.log.error({ err }, "Planner agent failed");
-    res.status(500).json({ error: "Planner agent failed to generate plan" });
+    respondAiError(req, res, err, "Planner agent failed");
   }
 });
 

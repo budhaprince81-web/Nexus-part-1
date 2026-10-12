@@ -5,7 +5,7 @@ import {
   Activity, MessageSquare, Database,
   Network, Code, Settings, Cpu, Globe,
   Eye, Brain, CheckSquare, FlaskConical, LineChart,
-  ChevronLeft, ChevronRight, Menu, X
+  ChevronLeft, ChevronRight, Menu, X, Gauge, Sparkles
 } from 'lucide-react';
 import { useGetAgentStatus } from '@workspace/api-client-react';
 import { useLangContext } from '@/hooks/use-language';
@@ -13,6 +13,8 @@ import { useVoice } from '@/hooks/use-voice';
 import { VoiceIndicator } from '@/components/hud/voice-indicator';
 import { NotificationsCenter } from '@/components/hud/notifications-center';
 import { ParticleSystem } from '@/components/hud/particles';
+import { BootSequence } from '@/components/hud/boot-sequence';
+import { useUiPrefs } from '@/hooks/use-ui-prefs';
 import { motion, AnimatePresence } from 'framer-motion';
 
 function Clock() {
@@ -42,6 +44,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { t, lang, setLanguage } = useLangContext();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const { prefs, update } = useUiPrefs();
   const { data: agentStatus } = useGetAgentStatus({ query: { refetchInterval: 5000, queryKey: ['agents-status-nav'] } });
   const activeAgents = agentStatus?.filter((a: any) => a.status === 'active').length || 0;
 
@@ -137,9 +140,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-[100dvh] h-screen bg-background text-foreground flex flex-col overflow-hidden relative">
-      {/* Global particle system */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <ParticleSystem count={40} interactive={false} />
+      {/* Cinematic boot sequence — performs real health/provider checks */}
+      <BootSequence skip={prefs.lowResource} />
+
+      {/* Global particle system (disabled in low-resource mode) */}
+      <div className="nexus-particles fixed inset-0 pointer-events-none z-0">
+        <ParticleSystem count={prefs.lowResource ? 0 : 40} interactive={false} />
       </div>
 
       {/* Scanlines overlay */}
@@ -193,6 +199,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <span className="hidden sm:inline">{lang === 'en' ? 'EN' : 'NE'}</span>
           </button>
 
+          {/* Visual intensity: low-resource mode for weaker devices */}
+          <button
+            onClick={() => update({ lowResource: !prefs.lowResource })}
+            aria-pressed={prefs.lowResource}
+            title={
+              prefs.lowResource
+                ? 'Low-resource mode is ON — particle field and effects disabled'
+                : 'Low-resource mode is OFF — enable it on slower devices'
+            }
+            aria-label="Toggle low-resource mode"
+            className={cn(
+              'flex items-center gap-1 px-2 py-1 border transition-all font-mono text-[10px] uppercase tracking-wider',
+              prefs.lowResource
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                : 'border-primary/15 text-primary/50 hover:border-primary/40 hover:text-primary',
+            )}
+          >
+            {prefs.lowResource ? <Gauge className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+            <span className="hidden sm:inline">{prefs.lowResource ? 'LOW' : 'FX'}</span>
+          </button>
+
           {/* Notifications */}
           <NotificationsCenter />
 
@@ -203,6 +230,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
             transcript={voice.transcript}
             enabled={voice.enabled}
             onToggle={voice.toggle}
+            supported={voice.supported}
+            errorKind={voice.errorKind}
+            onStopSpeaking={voice.stopSpeaking}
             compact
           />
 

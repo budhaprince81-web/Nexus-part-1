@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import providersRouter from "./providers";
 import anthropicRouter from "./anthropic";
 import {
   memoryRouter,
@@ -14,11 +15,13 @@ import {
   automationRouter,
   tasksRouter,
   notificationsRouter,
+  agentRunsRouter,
 } from "./nexus";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(providersRouter);
 router.use(anthropicRouter);
 router.use(memoryRouter);
 router.use(agentsRouter);
@@ -32,5 +35,6 @@ router.use(researchRouter);
 router.use(automationRouter);
 router.use(tasksRouter);
 router.use(notificationsRouter);
+router.use(agentRunsRouter);
 
 export default router;

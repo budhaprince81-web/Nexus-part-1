@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLangContext } from '@/hooks/use-language';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, CircleHelp, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Waypoints } from 'lucide-react';
 
@@ -170,6 +170,19 @@ export default function Trading() {
     conditions: false,
   });
 
+  // Timestamp of the last recomputation, so the numbers always carry a time.
+  const [computedAt, setComputedAt] = useState(() => new Date().toISOString());
+  const computedLabel = new Date(computedAt).toLocaleTimeString('en', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+  // Every edit re-stamps the scenario, so the displayed time is never stale.
+  useEffect(() => {
+    setComputedAt(new Date().toISOString());
+  }, [inputs]);
+
   const result = useMemo(() => {
     const capital = parsePositive(inputs.capital);
     const riskPercent = parsePositive(inputs.riskPercent);
@@ -249,6 +262,23 @@ export default function Trading() {
             <span className="text-primary/30" aria-hidden="true">/</span>
             <span>{copy.disclaimerShort}</span>
           </div>
+          {/* Data provenance: what was used, and when it was computed. */}
+          <dl className="relative z-10 mt-2 grid grid-cols-1 gap-x-4 gap-y-1 font-mono text-[10px] text-muted-foreground sm:grid-cols-3">
+            <div className="flex gap-2">
+              <dt className="text-primary/40 uppercase">Source</dt>
+              <dd>Operator inputs only — no market feed</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-primary/40 uppercase">Freshness</dt>
+              <dd>Static scenario · recomputed on edit</dd>
+            </div>
+            <div className="flex gap-2">
+              <dt className="text-primary/40 uppercase">Computed</dt>
+              <dd>
+                <time dateTime={computedAt}>{computedLabel}</time>
+              </dd>
+            </div>
+          </dl>
         </header>
 
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.02fr)_minmax(360px,0.98fr)]">

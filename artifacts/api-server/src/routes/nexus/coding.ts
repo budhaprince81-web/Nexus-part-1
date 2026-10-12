@@ -4,7 +4,12 @@
  * Streams file generation events via SSE. Supports 15+ languages and frameworks.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
-import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
+import {
+  extractJson,
+  hasConfiguredProvider,
+  streamChat,
+} from "../../ai/index.ts";
+import { aiErrorResult } from "../ai-error.ts";
 import { db, codingSessions } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { logNexusEvent } from "./logs";
@@ -54,10 +59,13 @@ router.post("/nexus/coding/build", async (req: Request, res: Response): Promise<
     return;
   }
   const resolvedStyle = ["minimal", "production", "enterprise"].includes(style) ? style : "production";
-  if (!isAnthropicConfigured()) {
+  if (!hasConfiguredProvider()) {
     res.status(503).json({
       error:
-        "Coding agent is unavailable: ANTHROPIC_API_KEY is not configured on the server.",
+        "Coding agent is unavailable: no AI provider is configured on the server. " +
+        "Add ANTHROPIC_API_KEY, GROQ_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or " +
+        "OPENROUTER_API_KEY in Replit Secrets.",
+      code: "no_provider_configured",
     });
     return;
   }
@@ -109,19 +117,29 @@ Generate a complete, working project with all necessary files. Include:
 
     sendEvent("thinking", { message: "Generating complete project files..." });
 
-    const stream = await anthropic.messages.stream({
-      model: "claude-opus-4-5",
-      max_tokens: 8000,
-      system: buildCodingSystemPrompt(resolvedStyle),
-      messages: [{ role: "user", content: userPrompt }],
-    });
-
+    // Streamed through the multi-provider engine so the same feature works on
+    // any configured vendor (with automatic fallback).
     let fullResponse = "";
-    for await (const chunk of stream) {
-      if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
-        fullResponse += chunk.delta.text;
-        // Send progress indicator
-        if (fullResponse.length % 500 < 30) {
+    let lastReported = 0;
+    for await (const event of streamChat(
+      {
+        messages: [{ role: "user", content: userPrompt }],
+        system: buildCodingSystemPrompt(resolvedStyle),
+        maxTokens: 8000,
+      },
+      { tier: "reasoning" },
+    )) {
+      if (event.type === "meta") {
+        sendEvent("provider", {
+          provider: event.provider,
+          providerLabel: event.providerLabel,
+          model: event.model,
+          fallbackUsed: event.fallbackUsed,
+        });
+      } else if (event.type === "delta") {
+        fullResponse += event.text;
+        if (fullResponse.length - lastReported >= 400) {
+          lastReported = fullResponse.length;
           sendEvent("progress", { message: "Writing code...", chars: fullResponse.length });
         }
       }
@@ -132,40 +150,45 @@ Generate a complete, working project with all necessary files. Include:
     let projectName = reqProjectName || "nexus-project";
     let summary = "";
 
-    try {
-      const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        generatedFiles = Array.isArray(parsed.files) ? parsed.files : [];
-        projectName = parsed.projectName || projectName;
-        summary = parsed.summary || "";
+    const jsonResult = extractJson<{
+      files?: GeneratedFile[];
+      projectName?: string;
+      summary?: string;
+      setupInstructions?: string;
+    }>(fullResponse);
 
-        // Send each file as an event
-        for (const file of generatedFiles) {
-          sendEvent("file", {
-            path: file.path,
-            language: file.language || "text",
-            content: file.content,
-            size: file.content.length,
-          });
-        }
+    if (jsonResult) {
+      const parsed = jsonResult;
+      generatedFiles = Array.isArray(parsed.files) ? parsed.files : [];
+      projectName = parsed.projectName || projectName;
+      summary = parsed.summary || "";
 
-        if (parsed.setupInstructions) {
-          sendEvent("instructions", { message: parsed.setupInstructions });
-        }
-      } else {
-        // Fallback: treat entire response as main file
-        generatedFiles = [{
-          path: `${projectName}/main.${language || "txt"}`,
-          content: fullResponse,
-          language: language || "text",
-        }];
-        sendEvent("file", { path: generatedFiles[0].path, language: language || "text", content: fullResponse, size: fullResponse.length });
+      // Send each file as an event
+      for (const file of generatedFiles) {
+        sendEvent("file", {
+          path: file.path,
+          language: file.language || "text",
+          content: file.content,
+          size: file.content.length,
+        });
       }
-    } catch {
-      // Fallback to raw response
-      generatedFiles = [{ path: "output.txt", content: fullResponse, language: "text" }];
-      sendEvent("file", { path: "output.txt", language: "text", content: fullResponse, size: fullResponse.length });
+
+      if (parsed.setupInstructions) {
+        sendEvent("instructions", { message: parsed.setupInstructions });
+      }
+    } else {
+      // Fallback: treat the entire response as a single main file.
+      generatedFiles = [{
+        path: `${projectName}/main.${language || "txt"}`,
+        content: fullResponse,
+        language: language || "text",
+      }];
+      sendEvent("file", {
+        path: generatedFiles[0].path,
+        language: language || "text",
+        content: fullResponse,
+        size: fullResponse.length,
+      });
     }
 
     // Update session record
@@ -191,16 +214,24 @@ Generate a complete, working project with all necessary files. Include:
 
     res.end();
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Code generation failed";
-    await logNexusEvent("error", `Coding error: ${msg}`, "coder");
+    const { body } = aiErrorResult(err);
+    await logNexusEvent("error", "Coding session failed", "coder", {
+      code: typeof body.code === "string" ? body.code : "unknown",
+    });
 
     try {
       await db.update(codingSessions)
         .set({ status: "error" })
         .where(eq(codingSessions.id, sessionId));
-    } catch {}
+    } catch {
+      // Session row may already be gone; the error event below still informs the user.
+    }
 
-    sendEvent("error", { message: msg });
+    sendEvent("error", {
+      message: typeof body.error === "string" ? body.error : "Code generation failed",
+      code: body.code ?? "unknown",
+      ...(body.attempts ? { attempts: body.attempts } : {}),
+    });
     res.end();
   } finally {
     markAgentIdle("Coder");
