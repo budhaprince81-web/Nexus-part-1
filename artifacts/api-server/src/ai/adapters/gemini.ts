@@ -6,7 +6,8 @@
  */
 
 import { toGeminiParts } from "../content.ts";
-import { ProviderError } from "../errors.ts";
+import { classifyHttpStatus, ProviderError } from "../errors.ts";
+import { KeyPool, parseApiKeys, shouldRotateKey } from "../keys.ts";
 import { defaultRetryPolicy, fetchWithTimeout, postJsonWithRetry } from "../http.ts";
 import { parseSseJson, sseDataLines } from "../sse.ts";
 import type {
@@ -22,8 +23,11 @@ const GEMINI_BASE_URL =
   process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com";
 
 export interface GeminiAdapterConfig {
-  apiKey: string | undefined;
+  /** A single credential, or several (comma/whitespace separated) to rotate. */
+  apiKey: string | readonly string[] | undefined;
   models: Record<ModelTier, string>;
+  /** Model used when a message carries an image. */
+  visionModel?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -71,16 +75,20 @@ export class GeminiAdapter implements ProviderAdapter {
   readonly docsUrl = "https://ai.google.dev/api/generate-content";
   readonly capabilities = { streaming: true, vision: true, jsonMode: true } as const;
   readonly models: Record<ModelTier, string>;
+  readonly visionModel?: string;
 
-  private readonly apiKey: string | undefined;
+  private readonly pool: KeyPool;
 
   constructor(config: GeminiAdapterConfig) {
-    this.apiKey = config.apiKey;
+    this.pool = new KeyPool(
+      typeof config.apiKey === "string" ? parseApiKeys(config.apiKey) : (config.apiKey ?? []),
+    );
     this.models = config.models;
+    this.visionModel = config.visionModel;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey);
+    return this.pool.configured;
   }
 
   private body(params: AdapterChatParams): Record<string, unknown> {
@@ -102,32 +110,50 @@ export class GeminiAdapter implements ProviderAdapter {
   }
 
   async chat(params: AdapterChatParams): Promise<ProviderChatResponse> {
-    const { json } = await postJsonWithRetry({
-      provider: this.label,
-      url: `${GEMINI_BASE_URL}/v1beta/models/${encodeURIComponent(params.model)}:generateContent`,
-      headers: { "x-goog-api-key": this.apiKey ?? "" },
-      body: this.body(params),
-      signal: params.signal,
-      label: "generateContent",
-    });
+    // Try each credential in the pool: an auth/quota/rate-limit failure on one
+    // key is worth retrying with the next, everything else fails fast.
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
 
-    const record = asRecord(json);
-    if (record?.error) {
-      const error = asRecord(record.error);
-      throw new ProviderError({
-        provider: this.label,
-        kind: "bad_request",
-        message: `Gemini error: ${typeof error?.status === "string" ? error.status : "unknown"}`,
-      });
+    for (let i = 0; i < attempts.length; i += 1) {
+      try {
+        const { json } = await postJsonWithRetry({
+          provider: this.label,
+          url: `${GEMINI_BASE_URL}/v1beta/models/${encodeURIComponent(params.model)}:generateContent`,
+          headers: { "x-goog-api-key": attempts[i] ?? "" },
+          body: this.body(params),
+          signal: params.signal,
+          label: "generateContent",
+        });
+
+        const record = asRecord(json);
+        if (record?.error) {
+          const error = asRecord(record.error);
+          throw new ProviderError({
+            provider: this.label,
+            kind: "bad_request",
+            message: `Gemini error: ${typeof error?.status === "string" ? error.status : "unknown"}`,
+          });
+        }
+
+        const candidate = readCandidate(record);
+        return {
+          text: candidate.text,
+          model: params.model,
+          usage: candidate.usage,
+          finishReason: candidate.finishReason,
+        };
+      } catch (err) {
+        if (!shouldRotateKey(err) || i === attempts.length - 1) throw err;
+      }
     }
 
-    const candidate = readCandidate(record);
-    return {
-      text: candidate.text,
-      model: params.model,
-      usage: candidate.usage,
-      finishReason: candidate.finishReason,
-    };
+    // Unreachable: the loop either returns or throws on its final attempt.
+    throw new ProviderError({
+      provider: this.label,
+      kind: "unknown",
+      message: `${this.label} generateContent failed`,
+    });
   }
 
   async *stream(params: AdapterChatParams): AsyncGenerator<StreamDelta, void, void> {
@@ -135,29 +161,69 @@ export class GeminiAdapter implements ProviderAdapter {
       `${GEMINI_BASE_URL}/v1beta/models/${encodeURIComponent(params.model)}` +
       `:streamGenerateContent?alt=sse`;
 
-    const { response, clear } = await fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey ?? "" },
-        body: JSON.stringify(this.body(params)),
-      },
-      defaultRetryPolicy().timeoutMs,
-      params.signal,
-    );
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
 
-    if (!response.ok || !response.body) {
-      clear();
-      const status = response.status || 502;
+    type Connected = Awaited<ReturnType<typeof fetchWithTimeout>>;
+    let connected: Connected | null = null;
+
+    // Rotation is only safe *before* the first token: once part of an answer
+    // has been yielded it must never be restarted from a different key.
+    for (let i = 0; i < attempts.length; i += 1) {
+      let attempt: Connected | null = null;
+      try {
+        attempt = await fetchWithTimeout(
+          url,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-goog-api-key": attempts[i] ?? "" },
+            body: JSON.stringify(this.body(params)),
+          },
+          defaultRetryPolicy().timeoutMs,
+          params.signal,
+        );
+      } catch (err) {
+        if (shouldRotateKey(err) && i < attempts.length - 1) continue;
+        throw err;
+      }
+
+      if (!attempt.response.ok || !attempt.response.body) {
+        const status = attempt.response.status || 502;
+        const text = await attempt.response.text().catch(() => "");
+        attempt.clear();
+        const { kind, retryAfterMs } = classifyHttpStatus(status, text);
+        const error = new ProviderError({
+          provider: this.label,
+          kind,
+          status,
+          retryAfterMs,
+          message: `${this.label} streaming request failed with HTTP ${status}`,
+        });
+        if (shouldRotateKey(error) && i < attempts.length - 1) continue;
+        throw error;
+      }
+
+      connected = attempt;
+      break;
+    }
+
+    if (!connected) {
       throw new ProviderError({
         provider: this.label,
-        kind: status >= 500 ? "unavailable" : "bad_request",
-        status,
-        message: `${this.label} streaming request failed with HTTP ${status}`,
+        kind: "unknown",
+        message: `${this.label} streaming request failed`,
       });
     }
 
-    clear();
+    const response = connected.response;
+    connected.clear();
+    if (!response.body) {
+      throw new ProviderError({
+        provider: this.label,
+        kind: "malformed",
+        message: `${this.label} streaming response carried no body`,
+      });
+    }
 
     let usage: Usage = { inputTokens: null, outputTokens: null };
     let finishReason: string | null = null;

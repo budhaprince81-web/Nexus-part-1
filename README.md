@@ -12,16 +12,18 @@ Reliability first, accuracy second, safe autonomy third.
 
 | Capability | Status | Where |
 |---|---|---|
-| Multi-provider AI engine (Anthropic, OpenAI, Groq, OpenRouter, Gemini, Ollama) with automatic fallback | ✅ implemented | `artifacts/api-server/src/ai/` |
+| Multi-provider AI engine (Anthropic, OpenAI, Groq, OpenRouter, Gemini, Ollama), automatic fallback + multi-key rotation | ✅ implemented | `artifacts/api-server/src/ai/` |
 | Streaming chat (SSE) with provider/model provenance | ✅ implemented | `src/routes/anthropic/index.ts` |
 | Autonomous agent runtime: UNDERSTAND → PLAN → AUTHORIZE → EXECUTE → OBSERVE → VERIFY → REPORT | ✅ implemented | `src/ai/agent-runtime.ts` |
 | Human-in-the-loop approval for consequential steps, pause/resume/cancel | ✅ implemented | `src/routes/nexus/agent-runs.ts` |
 | JARVIS subordinate assistant + NEXUS verification of its results | ✅ implemented | `src/routes/nexus/agent-runs.ts` |
 | Research / Coding / Vision (multimodal) / Planner agents | ✅ implemented | `src/routes/nexus/*.ts` |
+| Source-grounded research: real articles with citations, freshness and untrusted-content boundary | ✅ implemented | `src/routes/nexus/research.ts` |
+| Market data (Alpha Vantage): quotes, daily history, FX, with provenance and no trading path | ✅ implemented | `src/routes/nexus/market.ts` |
 | Isolated code sandbox with guardrails | ✅ implemented | `src/lib/sandbox-exec.ts` |
 | Memory store with search, editable and deletable | ✅ implemented | `src/routes/nexus/memory.ts` |
 | Voice: STT, TTS, English + Nepali, push-to-talk, interruptible playback | ✅ implemented | `nexus-ui/src/hooks/use-voice.ts` |
-| Trading workspace — mathematical scenarios only, no market feed, no orders | ✅ implemented | `nexus-ui/src/pages/trading.tsx` |
+| Trading workspace — mathematical scenarios, optional real **delayed** quotes, no order path | ✅ implemented | `nexus-ui/src/pages/trading.tsx` |
 | 2050 HUD: energy core, glass panels, boot sequence, low-resource + reduced-motion modes | ✅ implemented | `nexus-ui/src/components/hud/` |
 
 Honest by construction: nothing in this system invents data, progress, tool
@@ -103,9 +105,60 @@ telemetry — never a credential value.
 engine maps it to the right model per provider, so a light task does not burn a
 heavy model. Override with `<PROVIDER>_MODEL[_FAST|_REASONING]`.
 
+**Credential rotation.** Any provider variable may hold several keys separated by
+commas. They are used round-robin, and an `auth` / `quota` / `rate_limit` failure
+on one key transparently retries the same request with the next key before the
+provider is treated as failed. Rotation is only ever attempted *before* the first
+streamed token, so a partially delivered answer is never restarted elsewhere.
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-first,sk-or-v1-second
+GEMINI_API_KEY=key-one,key-two
+```
+
 ---
 
-## 4. Autonomous agent runtime
+## 4. Data providers (market & news)
+
+Two optional providers give NEXUS real, citable data instead of model memory.
+Both are configured server-side like the AI providers, and both accept
+comma-separated keys for rotation.
+
+```bash
+ALPHA_VANTAGE_API_KEY=your-key     # Trading page + the market_data agent tool
+NEWS_API_KEY=your-key              # Research grounding + the news_search agent tool
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/nexus/market/status` | Whether the provider is configured, its freshness, the live-trading flag (always `false`) and the local request budget |
+| `GET /api/nexus/market/quote?symbol=AAPL` | One quote with `source`, `sourceUrl`, `fetchedAt`, `freshness` |
+| `GET /api/nexus/market/history?symbol=AAPL&full=1` | Daily OHLCV series |
+| `GET /api/nexus/market/fx?from=USD&to=NPR` | Spot FX rate |
+| `GET /api/nexus/news/status` | News provider state |
+| `GET /api/nexus/news/search?q=...&language=en&pageSize=8` | Current articles with real URLs |
+
+**Rules these services enforce**
+
+* **Never invent a price or a source.** If the provider refuses, the service
+  raises a classified error (`rate_limit`, `invalid_key`, `bad_symbol`, …). It
+  never substitutes placeholder data.
+* **Always attach provenance.** Every payload carries `source`, `sourceUrl`,
+  `fetchedAt` and `freshness`, and `liveTradingEnabled` is hard-coded `false`.
+  There is no order path anywhere in the codebase.
+* **Respect the free tier.** Results are cached and identical concurrent lookups
+  are de-duplicated into a single upstream call. A local 24-hour budget
+  (`MARKET_DAILY_BUDGET`, default 24) stops calls before the quota is burned.
+* **Retrieved text is untrusted.** Article titles/descriptions are stripped of
+  control characters, newline-collapsed, length-capped, and wrapped in an
+  explicit `BEGIN UNTRUSTED SOURCE MATERIAL` boundary when handed to a model.
+* **Symbol resolution is spend-aware.** Ticker-shaped input hits the quote
+  endpoint directly; a longer free-text name goes to symbol search first, so a
+  lookup like `apple` costs two calls instead of three.
+
+---
+
+## 5. Autonomous agent runtime
 
 ```
 UNDERSTAND → PLAN → AUTHORIZE → EXECUTE → OBSERVE → VERIFY → REPORT
@@ -124,6 +177,13 @@ UNDERSTAND → PLAN → AUTHORIZE → EXECUTE → OBSERVE → VERIFY → REPORT
   loop and blocked.
 * Independent steps run concurrently (bounded), dependent steps receive the
   verified output of their dependencies as context.
+* **Tools are advertised to the planner only when the server can actually run
+  them.** `answer`, `memory_search`, `sandbox` are always available;
+  `market_data` and `news_search` join the list only once `ALPHA_VANTAGE_API_KEY`
+  / `NEWS_API_KEY` are configured, so a plan can never contain a step that is
+  guaranteed to fail. `market_data` accepts a ticker *or* a company name and
+  resolves it to a real instrument; `news_search` returns boundary-marked,
+  untrusted article text.
 
 ### JARVIS
 
@@ -140,7 +200,7 @@ and approval flow, with its own role prompt, task history and status.
 
 ---
 
-## 5. Honesty guarantees
+## 6. Honesty guarantees
 
 * **No invented memories, sources, live data or tool results.** A step with no
   output fails; it is never marked complete.
@@ -154,12 +214,14 @@ and approval flow, with its own role prompt, task history and status.
 * **The simulation provider is opt-in and labelled.** `NEXUS_ALLOW_MOCK_PROVIDER`
   is off by default, never counts as "AI available", and marks every response
   `SIMULATED`.
-* **Trading is a calculator, not a broker.** No market feed, no order placement,
-  no profit claims; source, freshness and compute time are always displayed.
+* **Trading is a calculator, not a broker.** A real third-party quote can *seed*
+  an input, but it is always labelled `DELAYED` with its source and fetch time,
+  is never applied automatically, and there is no order path at all — no live
+  order placement, no profit claims.
 
 ---
 
-## 6. Security & privacy
+## 7. Security & privacy
 
 * Credentials are read from server-side environment variables only. No key is
   bundled into frontend code, written to logs, included in error messages or
@@ -174,7 +236,7 @@ and approval flow, with its own role prompt, task history and status.
 
 ---
 
-## 7. Repository layout
+## 8. Repository layout
 
 | Path | Purpose |
 |---|---|
@@ -189,7 +251,7 @@ and approval flow, with its own role prompt, task history and status.
 
 ---
 
-## 8. Testing
+## 9. Testing
 
 ```bash
 pnpm --filter @workspace/api-server run test    # 27 tests: engine + agent runtime
@@ -204,7 +266,7 @@ and cancellation against an in-memory store.
 
 ---
 
-## 9. Known limitations
+## 10. Known limitations
 
 * Agent run telemetry (token/latency counters) is process-local and resets on
   restart; run history itself is durable in Postgres.

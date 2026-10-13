@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLangContext } from '@/hooks/use-language';
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Check, CircleHelp, RotateCcw, ShieldCheck, SlidersHorizontal, Sparkles, Waypoints } from 'lucide-react';
+import MarketReference from '@/components/market-reference';
 
 type FieldKey = 'capital' | 'riskPercent' | 'entry' | 'stop' | 'target';
 type ChecklistKey = 'thesis' | 'invalidation' | 'size' | 'conditions';
@@ -60,7 +61,7 @@ const COPY = {
     checked: 'complete',
     reset: 'Reset planner',
     guardrailTitle: 'A tool, not a signal.',
-    guardrailBody: 'All values come only from your inputs. There are no live quotes. Fees, slippage, tax, and contract multipliers are excluded. Options and instruments with multipliers are not supported.',
+    guardrailBody: 'Calculator values come only from your inputs. Any quote you load is supplied by a third party and may be delayed; it is never applied automatically. Fees, slippage, tax, and contract multipliers are excluded. Options and instruments with multipliers are not supported.',
     disclaimer: 'For informational and educational use only. This is not financial advice and is not a recommendation to buy or sell. It does not execute orders or connect to a bank or broker. No accuracy or profit is promised.',
     localNote: 'Your financial inputs stay in this page only and are not stored.',
     invalidTitle: 'Check the plan inputs',
@@ -75,9 +76,9 @@ const COPY = {
     noChecks: 'No checklist items completed',
     checks: 'items checked',
     whatIncluded: 'Linear instrument · 1× assumed',
-    liveData: 'OFFLINE BY DESIGN',
+    liveData: 'READ-ONLY · NO ORDERS',
     riskNotice: 'Loss estimate assumes the stop is filled at its stated price.',
-    disclaimerShort: 'No orders · No market feed · No advice',
+    disclaimerShort: 'No orders · Quotes delayed · No advice',
   },
   ne: {
     eyebrow: 'नेक्सस / व्यक्तिगत वित्त उपकरण',
@@ -125,7 +126,7 @@ const COPY = {
     checked: 'पूरा',
     reset: 'योजना रिसेट',
     guardrailTitle: 'यो उपकरण हो, संकेत होइन।',
-    guardrailBody: 'सबै मान तपाईंका इनपुटबाट मात्र आउँछन्। कुनै लाइभ मूल्य छैन। शुल्क, स्लिपेज, कर र कन्ट्र्याक्ट मल्टिप्लायर समावेश छैनन्। विकल्प कारोबार र मल्टिप्लायर भएका उपकरण समर्थित छैनन्।',
+    guardrailBody: 'गणनाका मान तपाईंका इनपुटबाट मात्र आउँछन्। तपाईंले लोड गर्नुभएको मूल्य तेस्रो पक्षको हो र ढिलो हुन सक्छ; यो स्वतः लागू हुँदैन। शुल्क, स्लिपेज, कर र कन्ट्र्याक्ट मल्टिप्लायर समावेश छैनन्। विकल्प कारोबार र मल्टिप्लायर भएका उपकरण समर्थित छैनन्।',
     disclaimer: 'जानकारी र शिक्षाका लागि मात्र। यो वित्तीय सल्लाह वा किन्न/बेच्न सिफारिस होइन। यसले अर्डर कार्यान्वयन गर्दैन र बैंक वा ब्रोकरसँग जोडिँदैन। शुद्धता वा नाफाको कुनै प्रत्याभूति छैन।',
     localNote: 'तपाईंका वित्तीय इनपुट यही पृष्ठमा मात्र रहन्छन् र भण्डारण हुँदैनन्।',
     invalidTitle: 'योजनाका इनपुट जाँच्नुहोस्',
@@ -140,9 +141,9 @@ const COPY = {
     noChecks: 'चेकलिस्टको कुनै बुँदा पूरा छैन',
     checks: 'बुँदा जाँचिए',
     whatIncluded: 'रेखीय उपकरण · १× मानिएको',
-    liveData: 'लाइभ डेटा छैन',
+    liveData: 'पढ्ने-मात्र · अर्डर छैन',
     riskNotice: 'स्टप तोकिएको मूल्यमा भरिएको मान्दै नोक्सानी अनुमान गरिएको छ।',
-    disclaimerShort: 'अर्डर छैन · बजार फिड छैन · सल्लाह होइन',
+    disclaimerShort: 'अर्डर छैन · मूल्य ढिलो · सल्लाह होइन',
   },
 } as const;
 
@@ -216,6 +217,10 @@ export default function Trading() {
   }, [inputs, copy]);
 
   const update = (key: FieldKey, value: string) => setInputs((current) => ({ ...current, [key]: value }));
+  // A looked-up quote only ever *seeds* an input — the operator can always edit
+  // or clear it, and nothing is applied implicitly.
+  const applyMarketPrice = (field: 'entry' | 'stop' | 'target', price: number) =>
+    setInputs((current) => ({ ...current, [field]: String(price) }));
   const reset = () => {
     setInputs(INITIAL_INPUTS);
     setCurrency('');
@@ -266,11 +271,11 @@ export default function Trading() {
           <dl className="relative z-10 mt-2 grid grid-cols-1 gap-x-4 gap-y-1 font-mono text-[10px] text-muted-foreground sm:grid-cols-3">
             <div className="flex gap-2">
               <dt className="text-primary/40 uppercase">Source</dt>
-              <dd>Operator inputs only — no market feed</dd>
+              <dd>Operator inputs + optional third-party quote</dd>
             </div>
             <div className="flex gap-2">
               <dt className="text-primary/40 uppercase">Freshness</dt>
-              <dd>Static scenario · recomputed on edit</dd>
+              <dd>Scenario static · quotes delayed</dd>
             </div>
             <div className="flex gap-2">
               <dt className="text-primary/40 uppercase">Computed</dt>
@@ -281,7 +286,9 @@ export default function Trading() {
           </dl>
         </header>
 
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.02fr)_minmax(360px,0.98fr)]">
+        <MarketReference onUsePrice={applyMarketPrice} />
+
+        <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.02fr)_minmax(360px,0.98fr)]">
           <section className="cyber-panel p-5 sm:p-6" aria-labelledby="setup-heading">
             <div className="mb-5 flex items-start justify-between gap-3">
               <div>

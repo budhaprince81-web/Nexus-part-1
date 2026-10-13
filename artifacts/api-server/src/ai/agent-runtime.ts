@@ -43,7 +43,7 @@ export type StepStatus =
   | "blocked"
   | "skipped";
 
-export type StepTool = "answer" | "memory_search" | "sandbox";
+export type StepTool = "answer" | "memory_search" | "sandbox" | "market_data" | "news_search";
 
 export interface PlanStep {
   id: string;
@@ -56,6 +56,10 @@ export interface PlanStep {
   /** Payload for the sandbox tool. */
   code?: string;
   language?: SandboxLanguage;
+  /** Payload for the `market_data` tool: a ticker symbol. */
+  symbol?: string;
+  /** Payload for the `news_search` tool: a search query. */
+  query?: string;
 }
 
 export interface RunStep extends PlanStep {
@@ -110,6 +114,16 @@ export interface AgentRuntimeDeps {
     language: SandboxLanguage;
     timeoutMs?: number;
   }) => Promise<SandboxExecResult>;
+  /**
+   * Real market lookup. Supplied by the server (Alpha Vantage); returns a
+   * pre-formatted, provenance-labelled block. Omitted in tests.
+   */
+  marketQuote?: (symbol: string) => Promise<string>;
+  /**
+   * Real article lookup. The text returned is treated as *untrusted data* —
+   * it is already sanitised and boundary-marked by the news service.
+   */
+  newsSearch?: (query: string) => Promise<string>;
   log?: (event: {
     level: "info" | "warn" | "error";
     message: string;
@@ -154,7 +168,7 @@ const PERSONAS: Record<string, string> = {
     "to have performed an action you did not perform.",
 };
 
-const STEP_TOOLS: StepTool[] = ["answer", "memory_search", "sandbox"];
+const STEP_TOOLS: StepTool[] = ["answer", "memory_search", "sandbox", "market_data", "news_search"];
 const SANDBOX_LANGUAGES: SandboxLanguage[] = ["python", "javascript", "typescript", "bash"];
 /** Roles whose work changes the world outside the model, so they need approval. */
 const CONSEQUENTIAL_ROLES = new Set([
@@ -165,6 +179,20 @@ const CONSEQUENTIAL_ROLES = new Set([
   "Filesystem",
 ]);
 
+/**
+ * Best-effort ticker extraction from a step description.
+ *
+ * A planner should always send an explicit `symbol`, but if it only writes prose
+ * we salvage the most ticker-shaped token ("Retrieve the price of IBM stock."
+ * → "IBM") instead of handing the provider a sentence, which it would reject.
+ */
+function deriveSymbol(description: string): string | null {
+  const parenthesised = description.match(/\(([A-Za-z]{1,6}(?:[.\-][A-Za-z]{1,4})?)\)/);
+  if (parenthesised) return parenthesised[1].toUpperCase();
+  const upperToken = description.match(/\b([A-Z]{2,5}(?:[.\-][A-Z]{1,3})?)\b/);
+  return upperToken ? upperToken[1] : null;
+}
+
 function fingerprint(text: string): string {
   // Cheap, stable fingerprint — no crypto needed for loop detection.
   let hash = 5381;
@@ -173,6 +201,34 @@ function fingerprint(text: string): string {
   }
   return `${text.length}:${hash}`;
 }
+
+/**
+ * What "satisfied" means for each tool.
+ *
+ * A retrieval step is judged on whether it *retrieved*, not on whether the
+ * retrieved material happens to answer the goal — otherwise a perfectly good
+ * search is marked failed and retried into a loop, which is exactly what
+ * happened before this table existed.
+ */
+const VERIFICATION_CRITERIA: Record<StepTool, string> = {
+  answer:
+    "The output below was written by a model. Satisfied = it is substantive, on-topic, and " +
+    "answers the step without inventing facts or claiming unperformed actions.",
+  memory_search:
+    "Satisfied = the memory lookup produced usable stored context, or clearly reported that " +
+    "nothing matched. A reported no-match is acceptable.",
+  sandbox:
+    "Satisfied = the code actually ran and the recorded exit code/output support the step's goal. " +
+    "An error, a non-zero exit, or a blocked execution is NOT satisfied.",
+  market_data:
+    "This step only had to retrieve one real quote. Satisfied = a real price/series was returned " +
+    "with its source. The output reporting provider unavailability is NOT satisfied. The data is " +
+    "explicitly DELAYED — never describe it as real-time or live in your note.",
+  news_search:
+    "This step only had to retrieve candidate sources. Satisfied = at least one article came back. " +
+    "It is NOT a failure that the articles only partially cover the topic — say so in the note " +
+    "instead. Only a total absence of sources is unsatisfied.",
+};
 
 function normalizeStep(raw: unknown, position: number): PlanStep | null {
   if (!raw || typeof raw !== "object") return null;
@@ -197,6 +253,12 @@ function normalizeStep(raw: unknown, position: number): PlanStep | null {
     ...(SANDBOX_LANGUAGES.includes(record.language as SandboxLanguage)
       ? { language: record.language as SandboxLanguage }
       : {}),
+    ...(typeof record.symbol === "string" && record.symbol.trim()
+      ? { symbol: record.symbol.trim() }
+      : typeof record.ticker === "string" && record.ticker.trim()
+        ? { symbol: record.ticker.trim() }
+        : {}),
+    ...(typeof record.query === "string" && record.query.trim() ? { query: record.query.trim() } : {}),
   };
 }
 
@@ -210,12 +272,46 @@ export function createAgentRuntime(deps: AgentRuntimeDeps) {
   const controls = new Map<string, { cancel: boolean }>();
 
   async function plan(run: RunRecord, context?: string): Promise<{ steps: PlanStep[]; provider: string; model: string }> {
+    // Only advertise tools the server can actually execute, so the planner can
+    // never produce a step that is guaranteed to fail at run time.
+    const toolDocs = [
+      "answer (use your own knowledge; no external data)",
+      "memory_search (look up stored memories)",
+      "sandbox (run code)",
+    ];
+    if (deps.marketQuote) {
+      toolDocs.push('market_data (real quote for a listed instrument)');
+    }
+    if (deps.newsSearch) {
+      toolDocs.push("news_search (current articles from the web)");
+    }
+
+    // The payload fields are spelled out because a plan that only carries prose
+    // cannot be executed: the tool would receive a whole sentence as a ticker.
+    const toolPayloadRules = [
+      deps.marketQuote
+        ? '  * tool "market_data": you MUST include "symbol" set to the ticker (e.g. "IBM", "AAPL"). ' +
+          "Never put a sentence in it. If the goal names a company, use its ticker."
+        : "",
+      deps.newsSearch
+        ? '  * tool "news_search": you MUST include "query" set to a short search phrase (2-6 keywords), ' +
+          "not a full sentence and not the step description."
+        : "",
+      '  * tool "sandbox": include "code" and "language".',
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     const system = [
       PERSONAS.Planner,
       "Available roles: Planner, Research, Coder, Memory, Analysis, Automation, Vision.",
-      "Available tools: answer (use your own knowledge), memory_search (look up stored memories), sandbox (run code).",
+      `Available tools: ${toolDocs.join(", ")}.`,
+      "Prefer news_search when the answer depends on current events, and market_data",
+      "when it depends on a price. Never invent data a tool would have supplied.",
+      "Tool payload rules:",
+      toolPayloadRules,
       "Respond with JSON only:",
-      '{"steps":[{"id":"step-1","agent":"Research","description":"...","tool":"answer","dependsOn":[],"consequential":false}]}',
+      '{"steps":[{"id":"step-1","agent":"Research","description":"...","tool":"answer","dependsOn":[],"consequential":false,"symbol":"IBM","query":"nepal electricity trade"}]}',
       "Use 3 to 6 steps. Mark a step consequential when it would modify files, run code,",
       "send external messages, publish, or change settings. Keep each description verifiable.",
     ].join("\n");
@@ -317,6 +413,37 @@ export function createAgentRuntime(deps: AgentRuntimeDeps) {
       return;
     }
 
+    if (step.tool === "market_data") {
+      if (!deps.marketQuote) {
+        step.status = "failed";
+        step.error = "Market data is not available in this runtime.";
+        step.output = null;
+        return;
+      }
+      // Prefer the explicit payload; otherwise salvage a plausible ticker from
+      // the description rather than feeding a whole sentence to the provider.
+      const symbol = step.symbol ?? deriveSymbol(step.description);
+      if (!symbol) {
+        step.output =
+          "MARKET DATA UNAVAILABLE: this step did not specify a ticker symbol, so no quote was requested.";
+        return;
+      }
+      step.output = await deps.marketQuote(symbol);
+      return;
+    }
+
+    if (step.tool === "news_search") {
+      const query = step.query ?? step.description;
+      if (!deps.newsSearch) {
+        step.status = "failed";
+        step.error = "Web article search is not available in this runtime.";
+        step.output = null;
+        return;
+      }
+      step.output = await deps.newsSearch(query);
+      return;
+    }
+
     const completion = await completeFn({
       content: contextFor(run, step),
       system: PERSONAS[step.agent] ?? PERSONAS.Analysis,
@@ -340,6 +467,8 @@ export function createAgentRuntime(deps: AgentRuntimeDeps) {
       content: [
         `Goal: ${run.goal}`,
         `Step description: ${step.description}`,
+        `Step tool: ${step.tool}`,
+        VERIFICATION_CRITERIA[step.tool],
         `Step output:\n${step.output}`,
         "",
         'Answer with JSON only: {"satisfied": true|false, "note": "one sentence"}',

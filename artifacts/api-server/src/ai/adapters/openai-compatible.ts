@@ -7,8 +7,9 @@
  */
 
 import { hasImage, toOpenAiContent } from "../content.ts";
-import { ProviderError } from "../errors.ts";
+import { classifyHttpStatus, ProviderError } from "../errors.ts";
 import { defaultRetryPolicy, fetchWithTimeout, postJsonWithRetry } from "../http.ts";
+import { KeyPool, parseApiKeys, shouldRotateKey } from "../keys.ts";
 import { parseSseJson, sseDataLines } from "../sse.ts";
 import type {
   AdapterChatParams,
@@ -25,7 +26,8 @@ export interface OpenAiCompatibleConfig {
   id: ProviderId;
   label: string;
   baseUrl: string;
-  apiKey: string | undefined;
+  /** A single credential, or several (comma/whitespace separated) to rotate. */
+  apiKey: string | readonly string[] | undefined;
   envVar: string;
   docsUrl: string;
   models: Record<ModelTier, string>;
@@ -91,7 +93,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   readonly visionModel?: string;
 
   private readonly baseUrl: string;
-  private readonly apiKey: string | undefined;
+  private readonly pool: KeyPool;
   private readonly extraHeaders: Record<string, string>;
   private readonly requiresKey: boolean;
   private readonly explicitlyConfigured: boolean | undefined;
@@ -105,7 +107,9 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     this.models = config.models;
     this.visionModel = config.visionModel;
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
-    this.apiKey = config.apiKey;
+    this.pool = new KeyPool(
+      typeof config.apiKey === "string" ? parseApiKeys(config.apiKey) : (config.apiKey ?? []),
+    );
     this.extraHeaders = config.extraHeaders ?? {};
     this.requiresKey = config.requiresKey;
     this.explicitlyConfigured = config.explicitlyConfigured;
@@ -113,12 +117,12 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
   isConfigured(): boolean {
     if (this.explicitlyConfigured !== undefined) return this.explicitlyConfigured;
-    return this.requiresKey ? Boolean(this.apiKey) : true;
+    return this.requiresKey ? this.pool.configured : true;
   }
 
-  private headers(): Record<string, string> {
+  private headers(apiKey?: string): Record<string, string> {
     const headers: Record<string, string> = { ...this.extraHeaders };
-    if (this.apiKey) headers.authorization = `Bearer ${this.apiKey}`;
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     return headers;
   }
 
@@ -145,22 +149,41 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
   async chat(params: AdapterChatParams): Promise<ProviderChatResponse> {
     this.assertImagesSupported(params);
-    const { json } = await postJsonWithRetry({
-      provider: this.label,
-      url: `${this.baseUrl}/chat/completions`,
-      headers: this.headers(),
-      body: this.body(params, false),
-      signal: params.signal,
-      label: "chat completion",
-    });
 
-    const record = asRecord(json);
-    return {
-      text: readFirstContent(record),
-      model: typeof record?.model === "string" ? record.model : params.model,
-      usage: readUsage(record),
-      finishReason: this.readFinishReason(record),
-    };
+    // Try each credential in the pool: an auth/quota/rate-limit failure on one
+    // key is worth retrying with the next, everything else fails fast.
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
+
+    for (let i = 0; i < attempts.length; i += 1) {
+      try {
+        const { json } = await postJsonWithRetry({
+          provider: this.label,
+          url: `${this.baseUrl}/chat/completions`,
+          headers: this.headers(attempts[i]),
+          body: this.body(params, false),
+          signal: params.signal,
+          label: "chat completion",
+        });
+
+        const record = asRecord(json);
+        return {
+          text: readFirstContent(record),
+          model: typeof record?.model === "string" ? record.model : params.model,
+          usage: readUsage(record),
+          finishReason: this.readFinishReason(record),
+        };
+      } catch (err) {
+        if (!shouldRotateKey(err) || i === attempts.length - 1) throw err;
+      }
+    }
+
+    // Unreachable: the loop either returns or throws on its final attempt.
+    throw new ProviderError({
+      provider: this.label,
+      kind: "unknown",
+      message: `${this.label} chat completion failed`,
+    });
   }
 
   private readFinishReason(record: Record<string, unknown> | null): string | null {
@@ -185,30 +208,71 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
   async *stream(params: AdapterChatParams): AsyncGenerator<StreamDelta, void, void> {
     this.assertImagesSupported(params);
-    const { response, clear } = await fetchWithTimeout(
-      `${this.baseUrl}/chat/completions`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", ...this.headers() },
-        body: JSON.stringify(this.body(params, true)),
-      },
-      defaultRetryPolicy().timeoutMs,
-      params.signal,
-    );
 
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => "");
-      clear();
-      const status = response.status || 502;
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
+
+    type Connected = Awaited<ReturnType<typeof fetchWithTimeout>>;
+    let connected: Connected | null = null;
+
+    // Rotation is only safe *before* the first token: once part of an answer
+    // has been yielded it must never be restarted from a different key.
+    for (let i = 0; i < attempts.length; i += 1) {
+      let attempt: Connected | null = null;
+      try {
+        attempt = await fetchWithTimeout(
+          `${this.baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", ...this.headers(attempts[i]) },
+            body: JSON.stringify(this.body(params, true)),
+          },
+          defaultRetryPolicy().timeoutMs,
+          params.signal,
+        );
+      } catch (err) {
+        if (shouldRotateKey(err) && i < attempts.length - 1) continue;
+        throw err;
+      }
+
+      if (!attempt.response.ok || !attempt.response.body) {
+        const status = attempt.response.status || 502;
+        const text = await attempt.response.text().catch(() => "");
+        attempt.clear();
+        const { kind, retryAfterMs } = classifyHttpStatus(status, text);
+        const error = new ProviderError({
+          provider: this.label,
+          kind,
+          status,
+          retryAfterMs,
+          message: `${this.label} streaming request failed with HTTP ${status}`,
+        });
+        // A partial answer was never delivered here, so trying the next key is safe.
+        if (shouldRotateKey(error) && i < attempts.length - 1) continue;
+        throw error;
+      }
+
+      connected = attempt;
+      break;
+    }
+
+    if (!connected) {
       throw new ProviderError({
         provider: this.label,
-        kind: status >= 500 ? "unavailable" : "bad_request",
-        status,
-        message: `${this.label} streaming request failed with HTTP ${status}`,
+        kind: "unknown",
+        message: `${this.label} streaming request failed`,
       });
     }
 
-    clear(); // Headers are in; the read loop enforces its own cancellation.
+    const response = connected.response;
+    connected.clear(); // Headers are in; the read loop enforces its own cancellation.
+    if (!response.body) {
+      throw new ProviderError({
+        provider: this.label,
+        kind: "malformed",
+        message: `${this.label} streaming response carried no body`,
+      });
+    }
 
     let latestUsage: Usage = { inputTokens: null, outputTokens: null };
     let finishReason: string | null = null;

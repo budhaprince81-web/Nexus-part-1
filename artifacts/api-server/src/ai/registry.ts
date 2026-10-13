@@ -81,8 +81,11 @@ function buildAdapters(): ProviderAdapter[] {
       apiKey: process.env.GROQ_API_KEY,
       envVar: "GROQ_API_KEY",
       docsUrl: "https://console.groq.com/docs/models",
+      // Verified against GET https://api.groq.com/openai/v1/models.
+      // `llama-3.1-8b-instant` and `meta-llama/llama-3.3-70b-instruct` are no
+      // longer served and now return HTTP 404.
       models: tierModels("GROQ_MODEL", {
-        fast: "llama-3.1-8b-instant",
+        fast: "openai/gpt-oss-20b",
         balanced: "openai/gpt-oss-120b",
         reasoning: "openai/gpt-oss-120b",
       }),
@@ -91,10 +94,16 @@ function buildAdapters(): ProviderAdapter[] {
     }),
     new GeminiAdapter({
       apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
+      visionModel: envModel("GEMINI_VISION_MODEL", "gemini-flash-latest"),
+      // Verified live: `gemini-2.5-flash` is "no longer available to new users".
+      // The `-latest` aliases keep working across model retirement, which is the
+      // failure mode that actually bit us here. Free-tier keys have no Pro
+      // quota, so the reasoning tier stays on Flash; set
+      // GEMINI_MODEL_REASONING=gemini-pro-latest if your key includes Pro.
       models: tierModels("GEMINI_MODEL", {
-        fast: "gemini-2.5-flash",
-        balanced: "gemini-2.5-flash",
-        reasoning: "gemini-2.5-pro",
+        fast: "gemini-flash-lite-latest",
+        balanced: "gemini-flash-latest",
+        reasoning: "gemini-flash-latest",
       }),
     }),
     new OpenAiCompatibleAdapter({
@@ -104,10 +113,14 @@ function buildAdapters(): ProviderAdapter[] {
       apiKey: process.env.OPENROUTER_API_KEY,
       envVar: "OPENROUTER_API_KEY",
       docsUrl: "https://openrouter.ai/docs/api_reference/overview",
+      visionModel: envModel("OPENROUTER_VISION_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"),
+      // Verified live. A free-tier OpenRouter key answers HTTP 402 for paid
+      // models, so the defaults are all `:free` routes. Point these at paid
+      // models (e.g. anthropic/claude-sonnet-4.6) once credits exist.
       models: tierModels("OPENROUTER_MODEL", {
-        fast: "meta-llama/llama-3.3-70b-instruct",
-        balanced: "anthropic/claude-sonnet-4.6",
-        reasoning: "anthropic/claude-sonnet-4.6",
+        fast: "liquid/lfm-2.5-2.6b:free",
+        balanced: "nvidia/nemotron-3-super-120b-a12b:free",
+        reasoning: "nvidia/nemotron-3-ultra-550b-a55b:free",
       }),
       capabilities: { streaming: true, vision: true, jsonMode: true },
       extraHeaders: {
