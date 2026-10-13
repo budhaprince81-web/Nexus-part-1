@@ -12,6 +12,7 @@ import { db, researchResults } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { logNexusEvent } from "./logs";
 import { markAgentActive, markAgentIdle } from "./agents";
+import { formatUntrustedSources, isNewsConfigured, searchArticles, type NewsArticle } from "../../lib/news.ts";
 
 const router: IRouter = Router();
 
@@ -94,12 +95,71 @@ Always respond with valid JSON in this exact structure:
   "relatedTopics": ["topic1", "topic2"]
 }`;
 
-    const userPrompt = `Research Query: ${query}
+    // --- Source grounding -------------------------------------------------
+    // When a news provider is configured we retrieve *real* current articles
+    // first and hand them to the model as explicitly untrusted source material.
+    // The citations we return are then the real URLs, never model inventions.
+    let grounding: {
+      used: boolean;
+      provider: string | null;
+      fetchedAt: string | null;
+      freshness: "delayed" | null;
+      articleCount: number;
+      note: string;
+    } = {
+      used: false,
+      provider: null,
+      fetchedAt: null,
+      freshness: null,
+      articleCount: 0,
+      note: "No live source provider is configured, so this answer is model knowledge only.",
+    };
+    let groundedArticles: NewsArticle[] = [];
+    let sourceBlock = "";
 
-Depth: ${resolvedDepth}
-${RESEARCH_PROMPTS[resolvedDepth]}
+    if (isNewsConfigured()) {
+      try {
+        const retrieved = await searchArticles(query, { pageSize: resolvedDepth === "quick" ? 5 : 8, language: resolvedLang });
+        groundedArticles = retrieved.articles;
+        if (groundedArticles.length > 0) {
+          sourceBlock = formatUntrustedSources(retrieved);
+          grounding = {
+            used: true,
+            provider: retrieved.source,
+            fetchedAt: retrieved.fetchedAt,
+            freshness: retrieved.freshness,
+            articleCount: groundedArticles.length,
+            note:
+              "Answer is grounded in the retrieved articles listed below. Article text is " +
+              "third-party and may be incomplete, paywalled or inaccurate.",
+          };
+        } else {
+          grounding.note = `No current articles matched this query on ${retrieved.source}.`;
+        }
+      } catch (err) {
+        grounding.note = `Live source retrieval failed (${
+          err instanceof Error ? err.name : "unknown"
+        }), so this answer is model knowledge only.`;
+        await logNexusEvent("warn", "Research source retrieval failed", "research", {
+          code: err instanceof Error ? err.name : "unknown",
+        });
+      }
+    }
 
-Provide comprehensive research on this topic.`;
+    const userPrompt = [
+      `Research Query: ${query}`,
+      "",
+      `Depth: ${resolvedDepth}`,
+      RESEARCH_PROMPTS[resolvedDepth],
+      sourceBlock
+        ? `\n${sourceBlock}\n\nGround your answer in the source material above and cite its URLs. ` +
+          "If the sources do not cover something, say so explicitly instead of guessing."
+        : "",
+      "",
+      "Provide comprehensive research on this topic.",
+    ]
+      .filter((line) => line !== "")
+      .join("\n");
 
     // Routed through the multi-provider engine: this works with whichever
     // provider is configured, and falls back automatically on failure.
@@ -141,13 +201,23 @@ Provide comprehensive research on this topic.`;
       };
     }
 
+    // Real, citable sources win. The model's own citations are kept but clearly
+    // labelled as unverified so the UI can render them differently.
+    const verifiedSources = groundedArticles.map((article) => ({
+      title: article.title,
+      url: article.url,
+      source: article.source,
+      publishedAt: article.publishedAt,
+    }));
+    const modelSources = result.sources.map((entry) => ({ title: String(entry), url: null, source: null, publishedAt: null }));
+
     const id = randomUUID();
     await db.insert(researchResults).values({
       id,
       query,
       summary: result.summary,
       keyPoints: result.keyPoints,
-      sources: result.sources,
+      sources: verifiedSources.length > 0 ? [...verifiedSources.map((s) => s.url), ...verifiedSources.map((s) => s.title)] : result.sources,
       depth: resolvedDepth,
     });
 
@@ -160,6 +230,10 @@ Provide comprehensive research on this topic.`;
       summary: result.summary,
       keyPoints: result.keyPoints,
       sources: result.sources,
+      // Additive fields — existing clients keep working untouched.
+      verifiedSources,
+      unverifiedModelSources: modelSources,
+      grounding,
       technicalDetails: result.technicalDetails,
       practicalApplications: result.practicalApplications,
       relatedTopics: result.relatedTopics,

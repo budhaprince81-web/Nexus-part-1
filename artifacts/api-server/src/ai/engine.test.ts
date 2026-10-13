@@ -445,6 +445,75 @@ test("Gemini uses header auth and its own endpoint shape", async () => {
   assert.equal(headers.get("x-goog-api-key"), "gemini-test");
 });
 
+test("a message carrying an image selects the provider's vision model", async () => {
+  resetEnv({ GEMINI_API_KEY: "gemini-test", NEXUS_DEFAULT_PROVIDER: "gemini" });
+  const calls = installFetch(() =>
+    new Response(
+      JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "looks like a dot" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 4 },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ),
+  );
+
+  await chat({
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is this?" },
+          { type: "image", mediaType: "image/png", dataBase64: "AAAA" },
+        ],
+      },
+    ],
+  });
+
+  // The tier default is a text model; the image must switch it to the vision
+  // model, or the provider would reject the request.
+  assert.ok(calls[0].url.includes("gemini-flash-latest"), calls[0].url);
+});
+
+test("multi-key rotation retries the same request with the next credential", async () => {
+  resetEnv({
+    // The first key is revoked; the second must answer.
+    GROQ_API_KEY: "revoked-key,live-key",
+    NEXUS_DEFAULT_PROVIDER: "groq",
+    NEXUS_AI_MAX_RETRIES: "0",
+  });
+  const calls = installFetch(({ init }) => {
+    const headers = new Headers(init.headers as Record<string, string>);
+    if (headers.get("authorization") === "Bearer revoked-key") {
+      return new Response(JSON.stringify({ error: { message: "Invalid API Key" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return chatCompletion("answered with the second key");
+  });
+
+  const result = await chat({ messages: [{ role: "user", content: "hi" }] }, { strict: true });
+
+  assert.equal(result.text, "answered with the second key");
+  assert.equal(calls.length, 2);
+  const second = new Headers(calls[1].init.headers as Record<string, string>);
+  assert.equal(second.get("authorization"), "Bearer live-key");
+});
+
+test("a single bad key does not loop: it fails once and surfaces the error", async () => {
+  resetEnv({ GROQ_API_KEY: "only-key", NEXUS_DEFAULT_PROVIDER: "groq", NEXUS_AI_MAX_RETRIES: "0" });
+  const calls = installFetch(
+    () =>
+      new Response(JSON.stringify({ error: { message: "Invalid API Key" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+
+  await assert.rejects(chat({ messages: [{ role: "user", content: "hi" }] }, { strict: true }));
+  assert.equal(calls.length, 1);
+});
+
 test("the simulation provider is opt-in and clearly labelled", async () => {
   resetEnv({ NEXUS_ALLOW_MOCK_PROVIDER: "true" });
   configureMockProvider({ text: "deterministic output" });

@@ -16,6 +16,8 @@ import {
   tasksRouter,
   notificationsRouter,
   agentRunsRouter,
+  marketRouter,
+  newsRouter,
 } from "./nexus";
 
 const router: IRouter = Router();
@@ -36,5 +38,7 @@ router.use(automationRouter);
 router.use(tasksRouter);
 router.use(notificationsRouter);
 router.use(agentRunsRouter);
+router.use(marketRouter);
+router.use(newsRouter);
 
 export default router;

@@ -6,7 +6,8 @@
  */
 
 import { toAnthropicContent } from "../content.ts";
-import { ProviderError } from "../errors.ts";
+import { classifyHttpStatus, ProviderError } from "../errors.ts";
+import { KeyPool, parseApiKeys, shouldRotateKey } from "../keys.ts";
 import { defaultRetryPolicy, fetchWithTimeout, postJsonWithRetry } from "../http.ts";
 import { parseSseJson, sseDataLines } from "../sse.ts";
 import type {
@@ -22,7 +23,8 @@ const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com";
 
 export interface AnthropicAdapterConfig {
-  apiKey: string | undefined;
+  /** A single credential, or several (comma/whitespace separated) to rotate. */
+  apiKey: string | readonly string[] | undefined;
   models: Record<ModelTier, string>;
   visionModel?: string;
 }
@@ -54,21 +56,23 @@ export class AnthropicAdapter implements ProviderAdapter {
   readonly models: Record<ModelTier, string>;
   readonly visionModel?: string;
 
-  private readonly apiKey: string | undefined;
+  private readonly pool: KeyPool;
 
   constructor(config: AnthropicAdapterConfig) {
-    this.apiKey = config.apiKey;
+    this.pool = new KeyPool(
+      typeof config.apiKey === "string" ? parseApiKeys(config.apiKey) : (config.apiKey ?? []),
+    );
     this.models = config.models;
     this.visionModel = config.visionModel;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.apiKey);
+    return this.pool.configured;
   }
 
-  private headers(): Record<string, string> {
+  private headers(apiKey?: string): Record<string, string> {
     return {
-      "x-api-key": this.apiKey ?? "",
+      "x-api-key": apiKey ?? "",
       "anthropic-version": ANTHROPIC_VERSION,
     };
   }
@@ -94,14 +98,26 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async chat(params: AdapterChatParams): Promise<ProviderChatResponse> {
-    const { json } = await postJsonWithRetry({
-      provider: this.label,
-      url: `${ANTHROPIC_BASE_URL}/v1/messages`,
-      headers: this.headers(),
-      body: this.body(params, false),
-      signal: params.signal,
-      label: "message",
-    });
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
+    let json: unknown = null;
+
+    for (let i = 0; i < attempts.length; i += 1) {
+      try {
+        const result = await postJsonWithRetry({
+          provider: this.label,
+          url: `${ANTHROPIC_BASE_URL}/v1/messages`,
+          headers: this.headers(attempts[i]),
+          body: this.body(params, false),
+          signal: params.signal,
+          label: "message",
+        });
+        json = result.json;
+        break;
+      } catch (err) {
+        if (!shouldRotateKey(err) || i === attempts.length - 1) throw err;
+      }
+    }
 
     const record = asRecord(json);
     const blocks = Array.isArray(record?.content) ? record?.content : [];
@@ -129,29 +145,67 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async *stream(params: AdapterChatParams): AsyncGenerator<StreamDelta, void, void> {
-    const { response, clear } = await fetchWithTimeout(
-      `${ANTHROPIC_BASE_URL}/v1/messages`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", ...this.headers() },
-        body: JSON.stringify(this.body(params, true)),
-      },
-      defaultRetryPolicy().timeoutMs,
-      params.signal,
-    );
+    const keys = this.pool.rotation();
+    const attempts: Array<string | undefined> = keys.length > 0 ? keys : [undefined];
+    type Connected = Awaited<ReturnType<typeof fetchWithTimeout>>;
+    let connected: Connected | null = null;
 
-    if (!response.ok || !response.body) {
-      clear();
-      const status = response.status || 502;
+    // Rotation is only safe *before* the first token.
+    for (let i = 0; i < attempts.length; i += 1) {
+      let attempt: Connected | null = null;
+      try {
+        attempt = await fetchWithTimeout(
+          `${ANTHROPIC_BASE_URL}/v1/messages`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json", ...this.headers(attempts[i]) },
+            body: JSON.stringify(this.body(params, true)),
+          },
+          defaultRetryPolicy().timeoutMs,
+          params.signal,
+        );
+      } catch (err) {
+        if (shouldRotateKey(err) && i < attempts.length - 1) continue;
+        throw err;
+      }
+
+      if (!attempt.response.ok || !attempt.response.body) {
+        const status = attempt.response.status || 502;
+        const text = await attempt.response.text().catch(() => "");
+        attempt.clear();
+        const { kind, retryAfterMs } = classifyHttpStatus(status, text);
+        const error = new ProviderError({
+          provider: this.label,
+          kind,
+          status,
+          retryAfterMs,
+          message: `${this.label} streaming request failed with HTTP ${status}`,
+        });
+        if (shouldRotateKey(error) && i < attempts.length - 1) continue;
+        throw error;
+      }
+
+      connected = attempt;
+      break;
+    }
+
+    if (!connected) {
       throw new ProviderError({
         provider: this.label,
-        kind: status >= 500 ? "unavailable" : "bad_request",
-        status,
-        message: `${this.label} streaming request failed with HTTP ${status}`,
+        kind: "unknown",
+        message: `${this.label} streaming request failed`,
       });
     }
 
-    clear();
+    const response = connected.response;
+    connected.clear();
+    if (!response.body) {
+      throw new ProviderError({
+        provider: this.label,
+        kind: "malformed",
+        message: `${this.label} streaming response carried no body`,
+      });
+    }
 
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;

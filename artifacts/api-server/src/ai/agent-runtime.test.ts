@@ -316,6 +316,119 @@ test("a cancelled run stops and is marked cancelled", async () => {
   assert.equal(runtime.isCancelled("run-1"), false);
 });
 
+test("tool steps receive explicit payloads, and market_data salvages a ticker from prose", async () => {
+  const store = createStore(newRun({ goal: "Check IBM and the news" }));
+  const stubbed = stubComplete({
+    plan: {
+      steps: [
+        {
+          id: "step-1",
+          agent: "Research",
+          description: "Retrieve the current price of IBM stock.",
+          tool: "market_data",
+          dependsOn: [],
+        },
+        {
+          id: "step-2",
+          agent: "Research",
+          description: "Look up the latest coverage.",
+          tool: "news_search",
+          query: "nepal electricity trade",
+          dependsOn: [],
+        },
+      ],
+    },
+  });
+  const seen: { symbol?: string; query?: string } = {};
+
+  const runtime = createAgentRuntime({
+    store,
+    complete: stubbed.complete,
+    marketQuote: async (symbol) => {
+      seen.symbol = symbol;
+      return `QUOTE ${symbol}`;
+    },
+    newsSearch: async (query) => {
+      seen.query = query;
+      return `ARTICLES ${query}`;
+    },
+  });
+
+  const finished = await runtime.runToCompletion("run-1");
+  assert.ok(finished);
+
+  assert.equal(finished.status, "completed");
+  // The planner omitted "symbol", so the sentence must NOT reach the provider.
+  assert.equal(seen.symbol, "IBM");
+  // The explicit payload wins over the description.
+  assert.equal(seen.query, "nepal electricity trade");
+});
+
+test("a market_data step with no resolvable ticker reports unavailability without calling the provider", async () => {
+  const store = createStore(newRun({ goal: "check something" }));
+  const stubbed = stubComplete({
+    plan: {
+      steps: [
+        {
+          id: "step-1",
+          agent: "Research",
+          description: "look up the thing the operator mentioned",
+          tool: "market_data",
+          dependsOn: [],
+        },
+      ],
+    },
+    verify: () => false,
+  });
+  let called = 0;
+
+  const runtime = createAgentRuntime({
+    store,
+    complete: stubbed.complete,
+    marketQuote: async () => {
+      called += 1;
+      return "should not happen";
+    },
+  });
+
+  const finished = await runtime.runToCompletion("run-1");
+  assert.ok(finished);
+
+  assert.equal(called, 0);
+  assert.equal(finished.status, "blocked");
+  assert.match(finished.steps[0].output ?? "", /did not specify a ticker symbol/);
+});
+
+test("verifying a retrieval step checks that it retrieved, not that the sources answer the goal", async () => {
+  const store = createStore(newRun({ goal: "news" }));
+  const stubbed = stubComplete({
+    plan: {
+      steps: [
+        {
+          id: "step-1",
+          agent: "Research",
+          description: "Search for coverage",
+          tool: "news_search",
+          query: "nepal",
+          dependsOn: [],
+        },
+      ],
+    },
+  });
+
+  const runtime = createAgentRuntime({
+    store,
+    complete: stubbed.complete,
+    newsSearch: async () => "article one\narticle two",
+  });
+  await runtime.runToCompletion("run-1");
+
+  const verifierCalls = stubbed.calls.filter((call) => (call.system ?? "").includes("Verifier"));
+  assert.equal(verifierCalls.length, 1);
+  assert.match(String(verifierCalls[0].content), /only had to retrieve candidate sources/);
+  assert.match(String(verifierCalls[0].content), /NOT a failure that the articles only partially cover/);
+});
+
 test("planning failure marks the run failed instead of inventing progress", async () => {
   const store = createStore(newRun());
   const runtime = createAgentRuntime({

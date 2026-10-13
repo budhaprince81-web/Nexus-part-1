@@ -11,5 +11,7 @@ export { default as automationRouter } from "./automation";
 export { default as tasksRouter } from "./tasks";
 export { default as notificationsRouter } from "./notifications";
 export { default as agentRunsRouter } from "./agent-runs";
+export { default as marketRouter } from "./market";
+export { default as newsRouter } from "./news";
 export { logNexusEvent } from "./logs";
 export { markAgentActive, markAgentIdle } from "./agents";

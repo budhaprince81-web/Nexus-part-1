@@ -16,6 +16,7 @@ import {
   ProviderError,
   type ProviderErrorKind,
 } from "./errors.ts";
+import { hasImage } from "./content.ts";
 import { recordAttempt, recordFailure, recordSuccess } from "./metrics.ts";
 import {
   allAdapters,
@@ -142,7 +143,11 @@ export async function chat(
   let lastError: ProviderError | null = null;
 
   for (const [position, adapter] of chain.entries()) {
-    const model = options.model ?? modelsFor(adapter, tier);
+    // A message carrying an image must use the provider's vision-capable model:
+    // the tier default may be a text-only model that would reject the request.
+    const wantsVision = params.messages.some((message) => hasImage(message.content));
+    const model =
+      options.model ?? (wantsVision && adapter.visionModel ? adapter.visionModel : modelsFor(adapter, tier));
     const startedAt = Date.now();
     recordAttempt(adapter.id);
     try {
@@ -199,7 +204,11 @@ export async function* streamChat(
   let lastError: ProviderError | null = null;
 
   for (const [position, adapter] of chain.entries()) {
-    const model = options.model ?? modelsFor(adapter, tier);
+    // A message carrying an image must use the provider's vision-capable model:
+    // the tier default may be a text-only model that would reject the request.
+    const wantsVision = params.messages.some((message) => hasImage(message.content));
+    const model =
+      options.model ?? (wantsVision && adapter.visionModel ? adapter.visionModel : modelsFor(adapter, tier));
     const startedAt = Date.now();
     recordAttempt(adapter.id);
 

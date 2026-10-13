@@ -20,6 +20,19 @@ Required env: `DATABASE_URL` and **at least one** provider key
 `OPENROUTER_API_KEY`, or `OLLAMA_BASE_URL`). See `.env.example` for everything,
 including optional routing and engine tuning.
 
+Optional data providers (enable real, citable data instead of model memory):
+
+- `ALPHA_VANTAGE_API_KEY` — Trading page quotes/history/FX + the `market_data`
+  agent tool. Free tier is ~25 calls/day, so results are cached, identical
+  concurrent lookups are de-duplicated, and a local 24h budget
+  (`MARKET_DAILY_BUDGET`) stops calls before the quota is spent.
+- `NEWS_API_KEY` — Research grounding (`verifiedSources` in the response) + the
+  `news_search` agent tool.
+
+Any provider variable accepts **comma-separated keys** for rotation: an
+`auth`/`quota`/`rate_limit` failure on one key retries with the next one before
+the provider counts as failed.
+
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
@@ -28,7 +41,9 @@ including optional routing and engine tuning.
 - **DB**: PostgreSQL + Drizzle ORM (`lib/db/src/schema/nexus.ts`, incl. `agent_runs`)
 - **AI**: provider-agnostic engine in `artifacts/api-server/src/ai/` — Anthropic
   (native Messages API), OpenAI, Groq, OpenRouter, Ollama (OpenAI-compatible),
-  and Google Gemini, with automatic fallback
+  and Google Gemini, with automatic fallback and multi-key rotation (`ai/keys.ts`)
+- **Data**: Alpha Vantage (market) and NewsAPI (articles) behind
+  `artifacts/api-server/src/lib/`, cached, provenance-carrying, read-only
 - **Validation**: Zod (`zod/v4`), drizzle-zod
 
 ## Where things live
@@ -38,6 +53,9 @@ including optional routing and engine tuning.
 | Provider adapters, registry, engine, metrics | `artifacts/api-server/src/ai/` |
 | Agent runtime (plan → execute → verify → report) | `artifacts/api-server/src/ai/agent-runtime.ts` |
 | Isolated code execution (shared) | `artifacts/api-server/src/lib/sandbox-exec.ts` |
+| Market data (Alpha Vantage) | `artifacts/api-server/src/lib/market-data.ts` |
+| News retrieval + untrusted-text boundary | `artifacts/api-server/src/lib/news.ts` |
+| Market/news routes | `artifacts/api-server/src/routes/nexus/{market,news}.ts` |
 | API routes | `artifacts/api-server/src/routes/` |
 | Frontend pages | `artifacts/nexus-ui/src/pages/` |
 | HUD components | `artifacts/nexus-ui/src/components/hud/` |
