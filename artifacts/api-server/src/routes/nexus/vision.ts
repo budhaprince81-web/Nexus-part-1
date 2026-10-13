@@ -4,8 +4,9 @@
  * Supports: image analysis, OCR, document understanding, object detection, UI element detection.
  */
 import { Router, type IRouter } from "express";
+import { complete, extractJson, hasConfiguredProvider, imagePart, textPart } from "../../ai/index.ts";
+import { respondAiError } from "../ai-error.ts";
 import { desc } from "drizzle-orm";
-import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import { db, visionAnalyses } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { logNexusEvent } from "./logs";
@@ -93,10 +94,13 @@ router.post("/nexus/vision/analyze", async (req, res): Promise<void> => {
   }
   const resolvedMime = VALID_MIMES.includes(mimeType) ? mimeType : "image/jpeg";
   const resolvedMode = VALID_MODES.includes(mode) ? mode : "describe";
-  if (!isAnthropicConfigured()) {
+  if (!hasConfiguredProvider()) {
     res.status(503).json({
       error:
-        "Vision agent is unavailable: ANTHROPIC_API_KEY is not configured on the server.",
+        "Vision agent is unavailable: no AI provider is configured on the server. " +
+        "Add ANTHROPIC_API_KEY, GROQ_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or " +
+        "OPENROUTER_API_KEY in Replit Secrets.",
+      code: "no_provider_configured",
     });
     return;
   }
@@ -106,32 +110,19 @@ router.post("/nexus/vision/analyze", async (req, res): Promise<void> => {
     const systemPrompt = buildVisionPrompt(resolvedMode, prompt);
     const isCustom = resolvedMode === "custom";
 
-    const message = await anthropic.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 1500,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: resolvedMime,
-                data: imageBase64,
-              },
-            },
-            {
-              type: "text",
-              text: isCustom ? (prompt || "Analyze this image.") : systemPrompt,
-            },
-          ],
-        },
+    // Multimodal request through the engine. Providers that cannot accept
+    // images report a bad_request, and the engine falls back to one that can.
+    const completion = await complete({
+      content: [
+        imagePart(resolvedMime, imageBase64),
+        textPart(isCustom ? prompt || "Analyze this image." : systemPrompt),
       ],
       system: isCustom ? "You are NEXUS Vision Agent, an expert image analyst." : undefined,
+      maxTokens: 1500,
+      tier: "reasoning",
     });
 
-    const rawText = message.content[0].type === "text" ? message.content[0].text : "";
+    const rawText = completion.text;
 
     // Parse JSON response
     let analysis = {
@@ -143,20 +134,21 @@ router.post("/nexus/vision/analyze", async (req, res): Promise<void> => {
     };
 
     if (!isCustom) {
-      try {
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          analysis = {
-            description: parsed.description || rawText,
-            objects: Array.isArray(parsed.objects) ? parsed.objects : [],
-            extractedText: parsed.extractedText || null,
-            confidence: typeof parsed.confidence === "number" ? parsed.confidence : 90,
-            insights: parsed.insights || "",
-          };
-        }
-      } catch {
-        // Use raw text as description
+      const parsed = extractJson<{
+        description?: string;
+        objects?: unknown;
+        extractedText?: string | null;
+        confidence?: number;
+        insights?: string;
+      }>(rawText);
+      if (parsed) {
+        analysis = {
+          description: parsed.description || rawText,
+          objects: Array.isArray(parsed.objects) ? (parsed.objects as string[]) : [],
+          extractedText: parsed.extractedText || null,
+          confidence: typeof parsed.confidence === "number" ? parsed.confidence : 90,
+          insights: parsed.insights || "",
+        };
       }
     }
 
@@ -169,7 +161,12 @@ router.post("/nexus/vision/analyze", async (req, res): Promise<void> => {
       extractedText: analysis.extractedText,
       confidence: analysis.confidence,
       mimeType: resolvedMime,
-      metadata: { mode: resolvedMode, insights: analysis.insights },
+      metadata: {
+        mode: resolvedMode,
+        insights: analysis.insights,
+        provider: completion.provider,
+        model: completion.model,
+      },
     });
 
     await logNexusEvent("info", `Vision analysis complete: ${mode} mode, ${analysis.objects.length} objects detected`, "vision");
@@ -182,12 +179,16 @@ router.post("/nexus/vision/analyze", async (req, res): Promise<void> => {
       confidence: analysis.confidence,
       insights: analysis.insights,
       mode: resolvedMode,
+      provider: completion.provider,
+      providerLabel: completion.providerLabel,
+      model: completion.model,
       createdAt: new Date().toISOString(),
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Vision analysis failed";
-    await logNexusEvent("error", `Vision analysis error: ${msg}`, "vision");
-    res.status(500).json({ error: msg });
+    await logNexusEvent("error", "Vision analysis failed", "vision", {
+      code: err instanceof Error ? err.name : "unknown",
+    });
+    respondAiError(req, res, err, "Vision agent failed");
   } finally {
     markAgentIdle("Vision");
   }

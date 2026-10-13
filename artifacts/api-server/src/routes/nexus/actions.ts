@@ -1,4 +1,6 @@
 import { Router, type IRouter } from "express";
+import { getAgentRuntime } from "../../ai/runtime-singleton.ts";
+import { executeSandbox, type SandboxLanguage } from "../../lib/sandbox-exec.ts";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db, pendingActions } from "@workspace/db";
 import {
@@ -10,6 +12,46 @@ import {
 import { logNexusEvent } from "./logs";
 
 const router: IRouter = Router();
+
+const SANDBOX_LANGUAGES: SandboxLanguage[] = ["python", "javascript", "typescript", "bash"];
+
+/**
+ * Executes an approved action for real, or states plainly that no executor is
+ * registered. The previous implementation reported "execution simulation
+ * complete", which claimed work that had never happened.
+ */
+async function executeApprovedAction(action: {
+  actionType: string;
+  params: unknown;
+}): Promise<string> {
+  const params =
+    action.params && typeof action.params === "object"
+      ? (action.params as Record<string, unknown>)
+      : {};
+
+  const code = typeof params.code === "string" ? params.code : null;
+  const language = SANDBOX_LANGUAGES.includes(params.language as SandboxLanguage)
+    ? (params.language as SandboxLanguage)
+    : "python";
+
+  if (code) {
+    const result = await executeSandbox({ code, language });
+    return [
+      `Executed ${language} code in the sandbox.`,
+      `exit code: ${result.exitCode} (${result.executionTimeMs}ms)`,
+      result.blocked ? `blocked: ${result.blockReason ?? "yes"}` : null,
+      result.stdout ? `stdout:\n${result.stdout}` : "stdout: (empty)",
+      result.stderr ? `stderr:\n${result.stderr}` : null,
+    ]
+      .filter((line): line is string => line !== null)
+      .join("\n");
+  }
+
+  return (
+    `Approved. No executor is registered for action type "${action.actionType}", ` +
+    `so nothing was executed. Register an executor before using this action type.`
+  );
+}
 
 // GET /nexus/pending — list non-expired, unresolved pending actions
 router.get("/nexus/pending", async (_req, res): Promise<void> => {
@@ -68,9 +110,21 @@ router.post("/nexus/confirm/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const executionOutput = body.data.approved
-    ? `Action "${action.actionType}" was approved and logged. Execution simulation complete.`
-    : `Action "${action.actionType}" was denied by user.`;
+  let executionOutput: string;
+  if (body.data.approved) {
+    try {
+      executionOutput = await executeApprovedAction({
+        actionType: action.actionType,
+        params: action.params,
+      });
+    } catch (err) {
+      executionOutput = `Approved, but execution failed: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`;
+    }
+  } else {
+    executionOutput = `Action "${action.actionType}" was denied by the operator. Nothing was executed.`;
+  }
 
   await db
     .update(pendingActions)
@@ -87,6 +141,15 @@ router.post("/nexus/confirm/:id", async (req, res): Promise<void> => {
     "security",
     { actionId: action.id, riskLevel: action.riskLevel },
   );
+
+  // If this approval was blocking an agent run, let the run continue now that a
+  // decision exists. Done in the background so the HTTP response stays fast.
+  const runId = (action.params as Record<string, unknown> | null)?.["runId"];
+  if (typeof runId === "string" && runId) {
+    void getAgentRuntime()
+      .runToCompletion(runId)
+      .catch(() => undefined);
+  }
 
   res.json(
     ConfirmActionResponse.parse({

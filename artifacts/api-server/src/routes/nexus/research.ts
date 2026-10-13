@@ -5,8 +5,9 @@
  * Supports standard and deep research modes.
  */
 import { Router, type IRouter } from "express";
+import { complete, hasConfiguredProvider, extractJson } from "../../ai/index.ts";
+import { respondAiError } from "../ai-error.ts";
 import { desc } from "drizzle-orm";
-import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import { db, researchResults } from "@workspace/db";
 import { randomUUID } from "crypto";
 import { logNexusEvent } from "./logs";
@@ -60,10 +61,13 @@ router.post("/nexus/research", async (req, res): Promise<void> => {
   const resolvedDepth = ["quick", "standard", "deep", "expert"].includes(depth) ? depth : "standard";
   const resolvedFormat = ["summary", "report", "analysis", "technical"].includes(format) ? format : "summary";
   const resolvedLang = ["en", "ne"].includes(language) ? language : "en";
-  if (!isAnthropicConfigured()) {
+  if (!hasConfiguredProvider()) {
     res.status(503).json({
       error:
-        "Research agent is unavailable: ANTHROPIC_API_KEY is not configured on the server.",
+        "Research agent is unavailable: no AI provider is configured on the server. " +
+        "Add ANTHROPIC_API_KEY, GROQ_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY or " +
+        "OPENROUTER_API_KEY in Replit Secrets.",
+      code: "no_provider_configured",
     });
     return;
   }
@@ -97,14 +101,16 @@ ${RESEARCH_PROMPTS[resolvedDepth]}
 
 Provide comprehensive research on this topic.`;
 
-    const message = await anthropic.messages.create({
-      model: "claude-opus-4-5",
-      max_tokens: 3000,
+    // Routed through the multi-provider engine: this works with whichever
+    // provider is configured, and falls back automatically on failure.
+    const completion = await complete({
+      content: userPrompt,
       system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 3000,
+      tier: "reasoning",
     });
 
-    const rawText = message.content[0].type === "text" ? message.content[0].text : "";
+    const rawText = completion.text;
 
     let result = {
       summary: rawText,
@@ -115,20 +121,25 @@ Provide comprehensive research on this topic.`;
       relatedTopics: [] as string[],
     };
 
-    try {
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const p = JSON.parse(jsonMatch[0]);
-        result = {
-          summary: p.summary || rawText,
-          keyPoints: Array.isArray(p.keyPoints) ? p.keyPoints : [],
-          sources: Array.isArray(p.sources) ? p.sources : [],
-          technicalDetails: p.technicalDetails || "",
-          practicalApplications: p.practicalApplications || "",
-          relatedTopics: Array.isArray(p.relatedTopics) ? p.relatedTopics : [],
-        };
-      }
-    } catch {}
+    const parsedResult = extractJson<{
+      summary?: string;
+      keyPoints?: unknown;
+      sources?: unknown;
+      technicalDetails?: string;
+      practicalApplications?: string;
+      relatedTopics?: unknown;
+    }>(rawText);
+
+    if (parsedResult) {
+      result = {
+        summary: parsedResult.summary || rawText,
+        keyPoints: Array.isArray(parsedResult.keyPoints) ? (parsedResult.keyPoints as string[]) : [],
+        sources: Array.isArray(parsedResult.sources) ? (parsedResult.sources as string[]) : [],
+        technicalDetails: parsedResult.technicalDetails || "",
+        practicalApplications: parsedResult.practicalApplications || "",
+        relatedTopics: Array.isArray(parsedResult.relatedTopics) ? (parsedResult.relatedTopics as string[]) : [],
+      };
+    }
 
     const id = randomUUID();
     await db.insert(researchResults).values({
@@ -155,9 +166,10 @@ Provide comprehensive research on this topic.`;
       createdAt: new Date().toISOString(),
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Research failed";
-    await logNexusEvent("error", `Research error: ${msg}`, "research");
-    res.status(500).json({ error: msg });
+    await logNexusEvent("error", "Research request failed", "research", {
+      code: err instanceof Error ? err.name : "unknown",
+    });
+    respondAiError(req, res, err, "Research agent failed");
   } finally {
     markAgentIdle("Research");
   }

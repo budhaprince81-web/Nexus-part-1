@@ -41,6 +41,18 @@ function resolvePort(): number {
   return port;
 }
 
+// Explicit host allowlist for the dev/preview server. Never a blanket `true`:
+// the preview hostname(s) are supplied per environment, and the Replit domains
+// remain the defaults so the same config works inside Replit.
+function resolveAllowedHosts(): string[] {
+  const fromEnv = (process.env.NEXUS_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean);
+  if (fromEnv.length > 0) return fromEnv;
+  return ['.replit.dev', '.repl.co', '.replit.app'];
+}
+
 export default defineConfig(({ command }) => ({
   base: process.env.BASE_PATH ?? '/',
   plugins: [
@@ -70,7 +82,7 @@ export default defineConfig(({ command }) => ({
     port: command === 'serve' ? resolvePort() : undefined,
     strictPort: true,
     host: '0.0.0.0',
-    allowedHosts: true,
+    allowedHosts: resolveAllowedHosts(),
     // Local dev only: forward API calls to the Express API server so the SPA
     // can talk to the backend when it is not behind the Replit router.
     proxy: {
@@ -86,6 +98,6 @@ export default defineConfig(({ command }) => ({
   preview: {
     port: command === 'serve' ? resolvePort() : undefined,
     host: '0.0.0.0',
-    allowedHosts: true,
+    allowedHosts: resolveAllowedHosts(),
   },
 }));

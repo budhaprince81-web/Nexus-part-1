@@ -185,3 +185,37 @@ export const automationLogs = pgTable("automation_logs", {
 });
 
 export type AutomationLog = typeof automationLogs.$inferSelect;
+
+/**
+ * Autonomous agent runs — every NEXUS task plan and every task NEXUS hands to
+ * Jarvis is persisted here so progress, approvals and results are auditable.
+ */
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: text("id").primaryKey(),
+    /** "nexus" for the primary assistant, "jarvis" for the subordinate. */
+    kind: text("kind").notNull().default("nexus"),
+    goal: text("goal").notNull(),
+    status: text("status").notNull().default("planning"),
+    /** Ordered plan produced by the planner: [{ id, agent, description, ... }] */
+    plan: jsonb("plan").notNull().default([]),
+    /** Live step state: [{ id, status, output, verification, attempts }] */
+    steps: jsonb("steps").notNull().default([]),
+    result: text("result"),
+    error: text("error"),
+    /** Cooperative control signal: run | pause | cancel */
+    control: text("control").notNull().default("run"),
+    provider: text("provider"),
+    model: text("model"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("agent_runs_kind_created_idx").on(table.kind, table.createdAt),
+  ],
+);
+
+export type AgentRun = typeof agentRuns.$inferSelect;
+export type InsertAgentRun = typeof agentRuns.$inferInsert;

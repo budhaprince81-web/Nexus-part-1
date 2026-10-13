@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { CyberPanel, CyberBadge, CyberButton } from '@/components/ui/cyber';
-import { Settings as SettingsIcon, Shield, Database, Cpu, Activity, Globe, Mic, Volume2 } from 'lucide-react';
+import { Settings as SettingsIcon, Shield, Database, Activity, Globe, Mic, Volume2, Gauge, Sparkles, Server } from 'lucide-react';
+import { ProviderStatusPanel } from '@/components/hud/provider-status';
+import { useUiPrefs } from '@/hooks/use-ui-prefs';
 import { useGetTelemetry, getGetTelemetryQueryKey } from '@workspace/api-client-react';
 import { useLangContext } from '@/hooks/use-language';
 import { useVoice } from '@/hooks/use-voice';
@@ -13,6 +15,7 @@ export default function Settings() {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [voiceRate, setVoiceRate] = useState(0.95);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
+  const { prefs, update } = useUiPrefs();
 
   const voice = useVoice({ wakeWord: 'nexus', lang: lang === 'ne' ? 'ne-NP' : 'en-US', ttsEnabled });
 
@@ -83,6 +86,9 @@ export default function Settings() {
               transcript={voice.transcript}
               enabled={voice.enabled}
               onToggle={voice.toggle}
+              supported={voice.supported}
+              errorKind={voice.errorKind}
+              onStopSpeaking={voice.stopSpeaking}
             />
           </div>
 
@@ -119,27 +125,108 @@ export default function Settings() {
           </CyberButton>
         </CyberPanel>
 
-        {/* LLM */}
-        <CyberPanel className="flex flex-col gap-4">
-          <div className="flex items-center gap-3 border-b border-primary/20 pb-3">
-            <Cpu className="w-5 h-5 text-primary" />
-            <h3 className="font-mono text-base text-primary uppercase tracking-widest">LLM Provider</h3>
-          </div>
-          <div className="space-y-3 font-mono text-xs px-2">
-            {[
-              { label: 'Active Model', value: 'claude-sonnet-4-5', badge: <CyberBadge variant="success">ACTIVE</CyberBadge> },
-              { label: 'Max Context', value: '200,000 tokens' },
-              { label: 'Temperature', value: '0.7' },
-              { label: 'API Provider', value: 'Anthropic' },
-            ].map(({ label, value, badge }) => (
-              <div key={label} className="flex justify-between items-center py-2 border-b border-primary/5 hover:bg-primary/5 px-2 transition-colors">
-                <span className="text-primary/60 uppercase">{label}</span>
-                <div className="flex items-center gap-2">
-                  {badge}
-                  <span className="text-primary font-bold tracking-wider">{value}</span>
+        {/* Multi-provider AI configuration (live status + real telemetry) */}
+        <div className="flex flex-col gap-3">
+          <ProviderStatusPanel />
+          <CyberPanel className="flex flex-col gap-3">
+            <div className="flex items-center gap-3 border-b border-primary/20 pb-3">
+              <Server className="w-5 h-5 text-primary" />
+              <h3 className="font-mono text-base text-primary uppercase tracking-widest">Provider Setup</h3>
+            </div>
+            <div className="space-y-2 font-mono text-[11px] text-primary/60 leading-relaxed px-1">
+              <p>
+                Credentials live only in server-side environment variables
+                (Replit Secrets) and are never sent to this browser.
+              </p>
+              <div className="border border-primary/10 p-2 bg-primary/[0.03]">
+                <div className="text-primary/40 uppercase text-[9px] mb-1">Default &amp; fallback</div>
+                <div className="text-primary/70">
+                  NEXUS_DEFAULT_PROVIDER · NEXUS_FALLBACK_PROVIDERS
                 </div>
               </div>
-            ))}
+              <div className="border border-primary/10 p-2 bg-primary/[0.03]">
+                <div className="text-primary/40 uppercase text-[9px] mb-1">Optional tuning</div>
+                <div className="text-primary/70">
+                  NEXUS_AI_TIMEOUT_MS · NEXUS_AI_MAX_RETRIES · NEXUS_AI_RETRY_BASE_MS ·
+                  &lt;PROVIDER&gt;_MODEL
+                </div>
+              </div>
+              <p className="text-primary/40">
+                After changing secrets, press the refresh icon above to reload the
+                provider registry without restarting the service.
+              </p>
+            </div>
+          </CyberPanel>
+        </div>
+
+        {/* Interface intensity & accessibility */}
+        <CyberPanel className="flex flex-col gap-4">
+          <div className="flex items-center gap-3 border-b border-primary/20 pb-3">
+            {prefs.lowResource ? (
+              <Gauge className="w-5 h-5 text-primary" />
+            ) : (
+              <Sparkles className="w-5 h-5 text-primary" />
+            )}
+            <h3 className="font-mono text-base text-primary uppercase tracking-widest">Interface</h3>
+          </div>
+
+          <div className="space-y-3 font-mono text-xs px-2">
+            <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-primary/60 uppercase">Low-resource mode</span>
+                <span className="text-[9px] text-primary/30">
+                  Disables particles, scanlines and blur
+                </span>
+              </div>
+              <button
+                onClick={() => update({ lowResource: !prefs.lowResource })}
+                aria-pressed={prefs.lowResource}
+                className={cn(
+                  'px-3 py-1 border text-[10px] uppercase tracking-wider transition-all',
+                  prefs.lowResource
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400'
+                    : 'border-primary/20 text-primary/40',
+                )}
+              >
+                {prefs.lowResource ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
+            <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-primary/60 uppercase">Animation</span>
+                <span className="text-[9px] text-primary/30">
+                  System follows your OS accessibility setting
+                </span>
+              </div>
+              <div className="flex gap-1">
+                {(['system', 'full', 'reduced'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => update({ motion: mode })}
+                    className={cn(
+                      'px-2 py-1 border text-[10px] uppercase tracking-wider transition-all',
+                      prefs.motion === mode
+                        ? 'border-primary bg-primary/15 text-primary'
+                        : 'border-primary/20 text-primary/40 hover:border-primary/40',
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center py-1.5 px-2">
+              <span className="text-primary/60 uppercase">Keyboard navigation</span>
+              <span className="text-emerald-400 text-[10px] uppercase">Enabled</span>
+            </div>
+            <div className="flex justify-between items-center py-1.5 px-2">
+              <span className="text-primary/60 uppercase">Skip boot sequence</span>
+              <span className="text-primary/50 text-[10px] uppercase">
+                {prefs.lowResource ? 'On (low-resource)' : 'Press any key'}
+              </span>
+            </div>
           </div>
         </CyberPanel>
 

@@ -10,5 +10,6 @@ export { default as researchRouter } from "./research";
 export { default as automationRouter } from "./automation";
 export { default as tasksRouter } from "./tasks";
 export { default as notificationsRouter } from "./notifications";
+export { default as agentRunsRouter } from "./agent-runs";
 export { logNexusEvent } from "./logs";
 export { markAgentActive, markAgentIdle } from "./agents";

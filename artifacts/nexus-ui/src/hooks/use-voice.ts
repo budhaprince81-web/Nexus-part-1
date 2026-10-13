@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
+
+export type VoiceErrorKind =
+  | 'permission-denied'
+  | 'no-microphone'
+  | 'unsupported'
+  | 'network'
+  | null;
 type VoiceMode = 'none' | 'continuous' | 'push-to-talk';
 
 interface UseVoiceOptions {
@@ -77,6 +84,7 @@ export function useVoice({
   const [transcript, setTranscript] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
+  const [errorKind, setErrorKind] = useState<VoiceErrorKind>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeWordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -171,13 +179,19 @@ export function useVoice({
     };
     sr.onerror = (event: SpeechRecognitionErrorEvent) => {
       setVoiceState('idle');
-      const fatal = ['not-allowed', 'service-not-allowed', 'audio-capture'].includes(event.error || '');
+      const code = event.error || '';
+      const fatal = ['not-allowed', 'service-not-allowed', 'audio-capture'].includes(code);
       if (fatal) {
+        // Be explicit about *why* the microphone stopped, instead of silently
+        // turning voice off. The user can then grant permission and retry.
+        setErrorKind(code === 'audio-capture' ? 'no-microphone' : 'permission-denied');
         recognitionModeRef.current = 'none';
         enabledRef.current = false;
         setEnabled(false);
         return;
       }
+      if (code === 'network') setErrorKind('network');
+      else setErrorKind(null);
       if (enabledRef.current && retryCountRef.current < 4) {
         retryCountRef.current += 1;
         scheduleRestart(Math.min(1000 * retryCountRef.current, 4000));
@@ -266,6 +280,22 @@ export function useVoice({
     window.speechSynthesis.speak(utterance);
   }, [feminineVoice, lang, scheduleRestart, speechPitch, speechRate, ttsEnabled]);
 
+  /** Stops speech immediately so the user can interrupt NEXUS mid-sentence. */
+  const stopSpeaking = useCallback(() => {
+    speechTokenRef.current += 1;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (enabledRef.current) {
+      setVoiceState('listening');
+      scheduleRestart(200);
+    } else {
+      setVoiceState('idle');
+    }
+  }, [scheduleRestart]);
+
+  const clearError = useCallback(() => setErrorKind(null), []);
+
   const toggle = useCallback(() => {
     if (enabledRef.current) {
       enabledRef.current = false;
@@ -273,7 +303,12 @@ export function useVoice({
       stopListening();
       return;
     }
+    if (!getSRClass()) {
+      setErrorKind('unsupported');
+      return;
+    }
     retryCountRef.current = 0;
+    setErrorKind(null);
     enabledRef.current = true;
     recognitionModeRef.current = 'continuous';
     setEnabled(true);
@@ -357,5 +392,18 @@ export function useVoice({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  return { state, transcript, enabled, wakeWordDetected, supported, toggle, pushToTalk, speak, setVoiceState };
+  return {
+    state,
+    transcript,
+    enabled,
+    wakeWordDetected,
+    supported,
+    errorKind,
+    clearError,
+    toggle,
+    pushToTalk,
+    speak,
+    stopSpeaking,
+    setVoiceState,
+  };
 }

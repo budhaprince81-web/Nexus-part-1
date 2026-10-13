@@ -22,6 +22,11 @@ export default function Chat() {
   const [streamingMessage, setStreamingMessage] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [providerMeta, setProviderMeta] = useState<{
+    providerLabel: string;
+    model: string;
+    fallbackUsed: boolean;
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: conversations } = useListAnthropicConversations({ query: { queryKey: getListAnthropicConversationsQueryKey() } });
@@ -81,6 +86,7 @@ export default function Chat() {
     setIsStreaming(true);
     setStreamingMessage('');
     setStreamError(null);
+    setProviderMeta(null);
 
     try {
       const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -131,8 +137,23 @@ export default function Chat() {
             const data = JSON.parse(dataStr) as {
               content?: string;
               error?: string;
+              meta?: {
+                provider?: string;
+                providerLabel?: string;
+                model?: string;
+                fallbackUsed?: boolean;
+              };
             };
             if (data.error) throw new Error(data.error);
+            // The server announces which provider actually answered (and
+            // whether a fallback was used) before the first token.
+            if (data.meta) {
+              setProviderMeta({
+                providerLabel: data.meta.providerLabel ?? data.meta.provider ?? 'unknown',
+                model: data.meta.model ?? 'unknown',
+                fallbackUsed: data.meta.fallbackUsed === true,
+              });
+            }
             if (data.content) {
               fullResponse += data.content;
               setStreamingMessage(fullResponse);
@@ -209,6 +230,29 @@ export default function Chat() {
 
       {/* Main Chat */}
       <CyberPanel className="flex-1 flex flex-col relative overflow-hidden h-full">
+        {activeConvId && (
+          <div className="flex items-center justify-between border-b border-primary/15 pb-2 mb-2 shrink-0">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-primary/40">
+              {providerMeta
+                ? `Answered by ${providerMeta.providerLabel}`
+                : isStreaming
+                  ? 'Awaiting provider…'
+                  : 'Provider auto-selected per request'}
+            </span>
+            <div className="flex items-center gap-2">
+              {providerMeta?.fallbackUsed && (
+                <span className="font-mono text-[9px] uppercase text-amber-400 border border-amber-500/40 px-1.5 py-0.5">
+                  fallback
+                </span>
+              )}
+              {providerMeta && (
+                <span className="font-mono text-[9px] text-primary/50 truncate max-w-[160px]">
+                  {providerMeta.model}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         {!activeConvId ? (
           <div className="flex-1 flex flex-col items-center justify-center font-mono text-primary/30 uppercase gap-4">
             <Cpu className="w-12 h-12 opacity-20" />
