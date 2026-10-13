@@ -1,0 +1,1294 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: NEXUS AI Operating System API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: anthropic
+    description: Anthropic AI chat operations
+  - name: nexus
+    description: NEXUS agent and memory operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /anthropic/conversations:
+    get:
+      operationId: listAnthropicConversations
+      tags: [anthropic]
+      summary: List all conversations
+      responses:
+        "200":
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AnthropicConversation"
+    post:
+      operationId: createAnthropicConversation
+      tags: [anthropic]
+      summary: Create a new conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnthropicConversationInput"
+      responses:
+        "201":
+          description: Created conversation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicConversation"
+
+  /anthropic/conversations/{id}:
+    get:
+      operationId: getAnthropicConversation
+      tags: [anthropic]
+      summary: Get conversation with messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Conversation with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicConversationWithMessages"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+    delete:
+      operationId: deleteAnthropicConversation
+      tags: [anthropic]
+      summary: Delete a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnthropicError"
+
+  /anthropic/conversations/{id}/messages:
+    get:
+      operationId: listAnthropicMessages
+      tags: [anthropic]
+      summary: List messages in a conversation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AnthropicMessage"
+    post:
+      operationId: sendAnthropicMessage
+      tags: [anthropic]
+      summary: Send a message and receive an AI response (SSE stream)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnthropicMessageInput"
+      responses:
+        "200":
+          description: SSE stream of assistant response chunks
+          content:
+            text/event-stream: {}
+
+  /nexus/memory:
+    get:
+      operationId: searchMemory
+      tags: [nexus]
+      summary: Search semantic memory
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Matching memory records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MemoryRecord"
+    post:
+      operationId: storeMemory
+      tags: [nexus]
+      summary: Store a memory record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemoryInput"
+      responses:
+        "201":
+          description: Stored memory record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryRecord"
+
+  /nexus/memory/{id}:
+    delete:
+      operationId: deleteMemory
+      tags: [nexus]
+      summary: Delete a memory record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /nexus/agents/plan:
+    post:
+      operationId: createAgentPlan
+      tags: [nexus]
+      summary: Decompose a task into a step-by-step agent plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanInput"
+      responses:
+        "200":
+          description: Generated plan with steps
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentPlan"
+
+  /nexus/agents/status:
+    get:
+      operationId: getAgentStatus
+      tags: [nexus]
+      summary: Get current status of all agents
+      responses:
+        "200":
+          description: Agent statuses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentStatus"
+
+  /nexus/sandbox/run:
+    post:
+      operationId: runSandbox
+      tags: [nexus]
+      summary: Execute code in isolated sandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SandboxInput"
+      responses:
+        "200":
+          description: Execution result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxResult"
+
+  /nexus/pending:
+    get:
+      operationId: listPendingActions
+      tags: [nexus]
+      summary: List pending actions awaiting human confirmation
+      responses:
+        "200":
+          description: Pending actions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingAction"
+
+  /nexus/confirm/{id}:
+    post:
+      operationId: confirmAction
+      tags: [nexus]
+      summary: Approve or deny a pending action
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmInput"
+      responses:
+        "200":
+          description: Confirmation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfirmResult"
+        "404":
+          description: Action not found
+
+  /nexus/telemetry:
+    get:
+      operationId: getTelemetry
+      tags: [nexus]
+      summary: Get live system telemetry metrics
+      responses:
+        "200":
+          description: System telemetry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Telemetry"
+
+  /nexus/logs:
+    get:
+      operationId: getRecentLogs
+      tags: [nexus]
+      summary: Get recent system log entries
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Recent log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LogEntry"
+
+  /nexus/vision/analyze:
+    post:
+      operationId: analyzeVision
+      tags: [nexus]
+      summary: Analyze image via Vision Agent (OCR, detection, description)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VisionInput"
+      responses:
+        "200":
+          description: Vision analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VisionAnalysis"
+
+  /nexus/vision/history:
+    get:
+      operationId: getVisionHistory
+      tags: [nexus]
+      summary: Get recent vision analysis history
+      responses:
+        "200":
+          description: Vision history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VisionHistoryItem"
+
+  /nexus/coding/build:
+    post:
+      operationId: buildCode
+      tags: [nexus]
+      summary: Build a complete project from natural language (SSE stream)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodingBuildInput"
+      responses:
+        "200":
+          description: SSE stream of code generation events
+          content:
+            text/event-stream: {}
+
+  /nexus/coding/sessions:
+    get:
+      operationId: listCodingSessions
+      tags: [nexus]
+      summary: List coding sessions
+      responses:
+        "200":
+          description: List of coding sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CodingSessionSummary"
+
+  /nexus/coding/sessions/{id}:
+    get:
+      operationId: getCodingSession
+      tags: [nexus]
+      summary: Get a coding session with all generated files
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Coding session with files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodingSession"
+        "404":
+          description: Not found
+
+  /nexus/research:
+    post:
+      operationId: conductResearch
+      tags: [nexus]
+      summary: Conduct deep research on any topic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResearchInput"
+      responses:
+        "200":
+          description: Research result with summary and key points
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchResult"
+
+  /nexus/automation/file:
+    post:
+      operationId: runFileAutomation
+      tags: [nexus]
+      summary: Run a file system automation operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AutomationInput"
+      responses:
+        "200":
+          description: Automation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationResult"
+        "202":
+          description: Queued for confirmation (destructive operations)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutomationPending"
+
+  /nexus/automation/workspace:
+    get:
+      operationId: getWorkspace
+      tags: [nexus]
+      summary: Get NEXUS workspace file tree
+      responses:
+        "200":
+          description: Workspace tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root:
+                    type: string
+                  tree:
+                    type: array
+                    items: {}
+                required: [root, tree]
+
+  /nexus/tasks:
+    get:
+      operationId: listTasks
+      tags: [nexus]
+      summary: List tasks with optional filters
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: priority
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+    post:
+      operationId: createTask
+      tags: [nexus]
+      summary: Create a new task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskInput"
+      responses:
+        "201":
+          description: Created task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+
+  /nexus/tasks/stats:
+    get:
+      operationId: getTaskStats
+      tags: [nexus]
+      summary: Get task statistics
+      responses:
+        "200":
+          description: Task stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskStats"
+
+  /nexus/tasks/{id}:
+    patch:
+      operationId: updateTask
+      tags: [nexus]
+      summary: Update a task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          description: Updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteTask
+      tags: [nexus]
+      summary: Delete a task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+
+  /nexus/notifications:
+    get:
+      operationId: listNotifications
+      tags: [nexus]
+      summary: List notifications
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notification"
+    post:
+      operationId: createNotification
+      tags: [nexus]
+      summary: Create a notification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationInput"
+      responses:
+        "201":
+          description: Created notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+    delete:
+      operationId: clearAllNotifications
+      tags: [nexus]
+      summary: Clear all notifications
+      responses:
+        "204":
+          description: Cleared
+
+  /nexus/notifications/{id}:
+    delete:
+      operationId: dismissNotification
+      tags: [nexus]
+      summary: Dismiss a notification
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Dismissed
+
+  /nexus/notifications/{id}/read:
+    patch:
+      operationId: markNotificationRead
+      tags: [nexus]
+      summary: Mark notification as read
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    AnthropicConversation:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, title, createdAt]
+
+    AnthropicMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+        conversationId:
+          type: integer
+        role:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, conversationId, role, content, createdAt]
+
+    AnthropicConversationInput:
+      type: object
+      properties:
+        title:
+          type: string
+      required: [title]
+
+    AnthropicMessageInput:
+      type: object
+      properties:
+        content:
+          type: string
+      required: [content]
+
+    AnthropicConversationWithMessages:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnthropicMessage"
+      required: [id, title, createdAt, messages]
+
+    AnthropicError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    MemoryRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        namespace:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, content, namespace, tags, createdAt]
+
+    MemoryInput:
+      type: object
+      properties:
+        content:
+          type: string
+        namespace:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      required: [content, namespace]
+
+    PlanInput:
+      type: object
+      properties:
+        task:
+          type: string
+        context:
+          type: string
+      required: [task]
+
+    PlanStep:
+      type: object
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        dependsOn:
+          type: array
+          items:
+            type: string
+      required: [id, agent, description, status, dependsOn]
+
+    AgentPlan:
+      type: object
+      properties:
+        id:
+          type: string
+        task:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanStep"
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, task, steps, createdAt]
+
+    AgentStatus:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        lastActive:
+          type: ["string", "null"]
+          format: date-time
+        tasksCompleted:
+          type: integer
+      required: [name, status, lastActive, tasksCompleted]
+
+    SandboxInput:
+      type: object
+      properties:
+        code:
+          type: string
+        language:
+          type: string
+        timeoutMs:
+          type: integer
+      required: [code, language]
+
+    SandboxResult:
+      type: object
+      properties:
+        stdout:
+          type: string
+        stderr:
+          type: string
+        exitCode:
+          type: integer
+        executionTimeMs:
+          type: integer
+        blocked:
+          type: boolean
+        blockReason:
+          type: ["string", "null"]
+      required: [stdout, stderr, exitCode, executionTimeMs, blocked, blockReason]
+
+    PendingAction:
+      type: object
+      properties:
+        id:
+          type: string
+        actionType:
+          type: string
+        target:
+          type: ["string", "null"]
+        description:
+          type: string
+        requestedBy:
+          type: string
+        riskLevel:
+          type: string
+        params:
+          type: object
+          additionalProperties: {}
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+      required: [id, actionType, target, description, requestedBy, riskLevel, params, createdAt, expiresAt]
+
+    ConfirmInput:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        reason:
+          type: string
+      required: [approved]
+
+    ConfirmResult:
+      type: object
+      properties:
+        id:
+          type: string
+        approved:
+          type: boolean
+        executionOutput:
+          type: ["string", "null"]
+      required: [id, approved, executionOutput]
+
+    Telemetry:
+      type: object
+      properties:
+        cpuPercent:
+          type: number
+        memoryPercent:
+          type: number
+        memoryUsedMb:
+          type: number
+        memoryTotalMb:
+          type: number
+        uptimeSeconds:
+          type: number
+        activeAgents:
+          type: integer
+        pendingActions:
+          type: integer
+        memoryRecords:
+          type: integer
+        conversationsToday:
+          type: integer
+      required:
+        - cpuPercent
+        - memoryPercent
+        - memoryUsedMb
+        - memoryTotalMb
+        - uptimeSeconds
+        - activeAgents
+        - pendingActions
+        - memoryRecords
+        - conversationsToday
+
+    LogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        level:
+          type: string
+        message:
+          type: string
+        source:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: {}
+      required: [id, level, message, source, timestamp, metadata]
+
+    VisionInput:
+      type: object
+      properties:
+        imageBase64:
+          type: string
+        mimeType:
+          type: string
+        prompt:
+          type: string
+        mode:
+          type: string
+      required: [imageBase64]
+
+    VisionAnalysis:
+      type: object
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        objects:
+          type: array
+          items:
+            type: string
+        extractedText:
+          type: ["string", "null"]
+        confidence:
+          type: integer
+        insights:
+          type: string
+        mode:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, description, objects, extractedText, confidence, insights, mode, createdAt]
+
+    VisionHistoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        description:
+          type: string
+        objects:
+          type: array
+          items:
+            type: string
+        confidence:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, prompt, description, objects, confidence, createdAt]
+
+    CodingBuildInput:
+      type: object
+      properties:
+        requirement:
+          type: string
+        language:
+          type: string
+        framework:
+          type: string
+        projectName:
+          type: string
+        style:
+          type: string
+      required: [requirement]
+
+    CodingFile:
+      type: object
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        language:
+          type: string
+      required: [path, content, language]
+
+    CodingSessionSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        requirement:
+          type: string
+        projectName:
+          type: string
+        framework:
+          type: string
+        language:
+          type: string
+        status:
+          type: string
+        totalFiles:
+          type: integer
+        summary:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, requirement, projectName, framework, language, status, totalFiles, summary, createdAt]
+
+    CodingSession:
+      type: object
+      properties:
+        id:
+          type: string
+        requirement:
+          type: string
+        projectName:
+          type: string
+        framework:
+          type: string
+        language:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/CodingFile"
+        status:
+          type: string
+        totalFiles:
+          type: integer
+        summary:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, requirement, projectName, framework, language, files, status, totalFiles, summary, createdAt]
+
+    ResearchInput:
+      type: object
+      properties:
+        query:
+          type: string
+        depth:
+          type: string
+        format:
+          type: string
+        language:
+          type: string
+      required: [query]
+
+    ResearchResult:
+      type: object
+      properties:
+        id:
+          type: string
+        query:
+          type: string
+        depth:
+          type: string
+        summary:
+          type: string
+        keyPoints:
+          type: array
+          items:
+            type: string
+        sources:
+          type: array
+          items:
+            type: string
+        technicalDetails:
+          type: string
+        practicalApplications:
+          type: string
+        relatedTopics:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, query, depth, summary, keyPoints, sources, technicalDetails, practicalApplications, relatedTopics, createdAt]
+
+    AutomationInput:
+      type: object
+      properties:
+        operation:
+          type: string
+        path:
+          type: string
+        content:
+          type: string
+        destination:
+          type: string
+        query:
+          type: string
+        recursive:
+          type: boolean
+      required: [operation, path]
+
+    AutomationResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        output:
+          type: string
+        data:
+          nullable: true
+      required: [success, output, data]
+
+    AutomationPending:
+      type: object
+      properties:
+        pending:
+          type: boolean
+        pendingId:
+          type: string
+        message:
+          type: string
+      required: [pending, pendingId, message]
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: ["string", "null"]
+        status:
+          type: string
+        priority:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: ["string", "null"]
+          format: date-time
+        completedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, description, status, priority, tags, dueDate, completedAt, createdAt, updatedAt]
+
+    TaskInput:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: string
+      required: [title]
+
+    TaskUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        priority:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        dueDate:
+          type: string
+
+    TaskStats:
+      type: object
+      properties:
+        total:
+          type: integer
+        pending:
+          type: integer
+        in_progress:
+          type: integer
+        completed:
+          type: integer
+        cancelled:
+          type: integer
+        critical:
+          type: integer
+        high:
+          type: integer
+        overdue:
+          type: integer
+      required: [total, pending, in_progress, completed, cancelled, critical, high, overdue]
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        message:
+          type: string
+        read:
+          type: boolean
+        metadata:
+          type: object
+          additionalProperties: {}
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, type, title, message, read, metadata, createdAt]
+
+    NotificationInput:
+      type: object
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        message:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: {}
+      required: [title, message]

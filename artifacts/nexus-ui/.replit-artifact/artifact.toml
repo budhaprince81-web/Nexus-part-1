@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "NEXUS AI Operating System"
+version = "1.0.0"
+id = "artifacts/nexus-ui"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19576
+
+[services.development]
+run = "pnpm --filter @workspace/nexus-ui run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/nexus-ui", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/nexus-ui/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19576"
+BASE_PATH = "/"

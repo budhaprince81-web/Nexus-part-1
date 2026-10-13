@@ -1,0 +1,1 @@
+"""NEXUS FastAPI application package."""
