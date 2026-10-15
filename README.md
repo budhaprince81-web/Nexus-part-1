@@ -256,7 +256,7 @@ and approval flow, with its own role prompt, task history and status.
 ```bash
 pnpm run test                                   # everything
 pnpm --filter @workspace/api-server run test    # 70 tests: engine, agent runtime, market data, news
-pnpm --filter @workspace/nexus-ui run test      # 52 tests: speech helpers, voice engine, chat voice output
+pnpm --filter @workspace/nexus-ui run test      # 55 tests: speech helpers, voice engine, chat voice output
 ```
 
 The engine suite runs the real adapters against a stubbed `fetch`, covering
@@ -269,8 +269,17 @@ The UI suite runs under jsdom with fake `speechSynthesis` and
 `SpeechRecognition` implementations (`src/test/speech-harness.ts`) and covers:
 sentence-aware chunking that never drops content, voice selection and missing
 Nepali voices, chunked playback, cancellation, duplicate suppression, transcript
-de-duplication, microphone errors, and an end-to-end check that the **chat page
-speaks a completed response exactly once**.
+de-duplication, denied/missing microphones, silence being reported as a hint
+rather than an error, and an end-to-end check that the **chat page speaks a
+completed response exactly once**.
+
+The Python service keeps its own checks:
+
+```bash
+cd artifacts/api-server/fastapi
+uv sync --frozen && uv run pytest -q     # 17 tests
+uv run ruff check .                      # lint (project config)
+```
 
 ---
 

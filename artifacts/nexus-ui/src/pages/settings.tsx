@@ -22,7 +22,7 @@ export default function Settings() {
   const {
     ttsEnabled, setTtsEnabled, voiceRate, setVoiceRate, voicePitch, setVoicePitch,
     availableVoices, selectedVoiceURI, setSelectedVoiceURI, ttsSupported,
-    sttSupported, ttsNotice, ttsError, conversationMode, setConversationMode,
+    sttSupported, ttsNotice, ttsError,              conversationMode, setConversationMode,
     commandMode, setCommandMode,
   } = voice;
 
@@ -95,6 +95,7 @@ export default function Settings() {
               onToggle={voice.toggleMic}
               supported={voice.sttSupported}
               errorKind={voice.errorKind}
+              notice={voice.micNotice}
               onStopSpeaking={voice.stopSpeaking}
             />
             <p className="font-mono text-[10px] text-primary/40 text-center max-w-[260px] leading-snug">

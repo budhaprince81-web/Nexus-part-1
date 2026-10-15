@@ -15,6 +15,8 @@ interface VoiceIndicatorProps {
   supported?: boolean;
   /** Why voice stopped, when it stopped for a reason the user can fix. */
   errorKind?: VoiceErrorKind;
+  /** Transient, non-error microphone status such as "silence detected". */
+  notice?: string | null;
   /** Interrupt speech playback. */
   onStopSpeaking?: () => void;
 }
@@ -101,6 +103,7 @@ export function VoiceIndicator({
   compact = false,
   supported = true,
   errorKind = null,
+  notice = null,
   onStopSpeaking,
 }: VoiceIndicatorProps) {
   const colors = {
@@ -206,6 +209,13 @@ export function VoiceIndicator({
         {state === 'processing' && <span className="text-amber-400 animate-pulse">PROCESSING</span>}
         {supported && state === 'speaking' && <span className="text-emerald-400">SPEAKING</span>}
       </div>
+
+      {/* Silence is not an error — shown as a quiet hint, not a warning. */}
+      {supported && !errorKind && notice && (
+        <div className="font-mono text-[10px] text-primary/50 text-center max-w-[220px] leading-snug">
+          {notice}
+        </div>
+      )}
 
       {supported && errorKind && (
         <div className="flex items-start gap-2 max-w-[220px] border border-destructive/40 bg-destructive/5 px-2 py-1.5">

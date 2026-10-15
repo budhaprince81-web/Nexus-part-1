@@ -135,6 +135,8 @@ export interface VoiceContextValue {
   listeningPaused: boolean;
   transcript: string;
   wakeWordDetected: boolean;
+  /** Transient, non-error microphone status (e.g. silence detected). */
+  micNotice: string | null;
   errorKind: VoiceErrorKind;
   clearError: () => void;
   toggleMic: () => void;
@@ -209,6 +211,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
   const [listeningPaused, setListeningPaused] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
+  const [micNotice, setMicNotice] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<VoiceErrorKind>(null);
 
   const [ttsEnabled, setTtsEnabledState] = useState(() =>
@@ -601,6 +604,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       }
     }
     setTranscript('');
+    setMicNotice(null);
     setState((previous) => (previous === 'speaking' ? previous : 'idle'));
   }, [clearRestartTimer]);
 
@@ -631,6 +635,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       sessionStartedAtRef.current = Date.now();
       setState('listening');
       setErrorKind(null);
+      setMicNotice(null);
     };
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let finalText = '';
@@ -646,8 +651,10 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         else interimText += value;
       }
 
-      // A healthy result proves the recogniser works — clear the retry budget.
+      // A healthy result proves the recogniser works — clear the retry budget
+      // and any "silence" hint from an earlier empty session.
       retryCountRef.current = 0;
+      setMicNotice(null);
 
       const latest = (interimText || finalText).trim();
       if (latest.toLowerCase().includes(WAKE_WORD)) {
@@ -675,7 +682,14 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         setState('idle');
         return;
       }
-      setErrorKind(code === 'network' ? 'network' : null);
+      if (code === 'no-speech') {
+        // Normal silence, not a failure: tell the user we are still listening
+        // instead of leaving them wondering whether the mic is live.
+        setMicNotice('No speech detected — still listening.');
+        setErrorKind(null);
+      } else {
+        setErrorKind(code === 'network' ? 'network' : null);
+      }
       setState('idle');
     };
     recognition.onend = () => {
@@ -811,6 +825,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       sessionStartedAtRef.current = Date.now();
       setState('listening');
       setErrorKind(null);
+      setMicNotice(null);
     };
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let finalText = '';
@@ -822,6 +837,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         if (result.isFinal) finalText += value;
         else interimText += value;
       }
+      setMicNotice(null);
       if (interimText.trim()) setTranscript(interimText.trim());
       const finished = finalText.trim();
       if (finished.length > 0) {
@@ -838,6 +854,8 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         setErrorKind('no-microphone');
       } else if (code === 'network') {
         setErrorKind('network');
+      } else if (code === 'no-speech') {
+        setMicNotice('No speech detected — hold the button and try again.');
       }
       setState('idle');
     };
@@ -914,6 +932,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       listeningPaused,
       transcript,
       wakeWordDetected,
+      micNotice,
       errorKind,
       clearError,
       toggleMic,
@@ -953,6 +972,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       commandMode,
       conversationMode,
       errorKind,
+      micNotice,
       listeningPaused,
       pauseListening,
       pushToTalk,
