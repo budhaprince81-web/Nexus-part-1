@@ -307,6 +307,43 @@ describe('voice input (speech recognition)', () => {
     rendered.unmount();
   });
 
+  it('treats silence as a hint, not a failure, and keeps listening', () => {
+    const rendered = renderProvider();
+    act(() => rendered.api.toggleMic());
+    act(() => FakeRecognition.latest?.fail('no-speech'));
+
+    expect(rendered.api.errorKind).toBeNull();
+    expect(rendered.api.micNotice).toMatch(/no speech/i);
+    // Silence must not switch voice input off — the user simply did not talk.
+    expect(rendered.api.sttEnabled).toBe(true);
+    rendered.unmount();
+  });
+
+  it('clears the silence hint as soon as speech is recognised', () => {
+    const rendered = renderProvider();
+    const received: string[] = [];
+    act(() => rendered.api.subscribeTranscript((text) => received.push(text)));
+    act(() => rendered.api.toggleMic());
+    act(() => FakeRecognition.latest?.fail('no-speech'));
+    expect(rendered.api.micNotice).toBeTruthy();
+
+    act(() => FakeRecognition.latest?.emit([{ text: 'hello nexus', final: true }]));
+
+    expect(rendered.api.micNotice).toBeNull();
+    expect(received).toEqual(['hello nexus']);
+    rendered.unmount();
+  });
+
+  it('reports silence from push-to-talk without turning voice input off', () => {
+    const rendered = renderProvider();
+    act(() => rendered.api.pushToTalk());
+    act(() => FakeRecognition.latest?.fail('no-speech'));
+
+    expect(rendered.api.micNotice).toMatch(/no speech/i);
+    expect(rendered.api.errorKind).toBeNull();
+    rendered.unmount();
+  });
+
   it('reports an unsupported browser instead of pretending to listen', () => {
     delete (window as unknown as Record<string, unknown>).SpeechRecognition;
     const rendered = renderProvider();
