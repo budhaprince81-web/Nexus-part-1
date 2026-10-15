@@ -156,7 +156,7 @@ export default function Dashboard() {
   const network = useNetworkInfo();
 
   const confirmAction = useConfirmAction();
-  const voice = useVoice({ wakeWord: 'nexus', ttsEnabled: true });
+  const voice = useVoice();
 
   const handleConfirm = (id: string, approved: boolean) => {
     confirmAction.mutate({ id, data: { approved } }, {

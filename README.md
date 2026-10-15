@@ -22,7 +22,7 @@ Reliability first, accuracy second, safe autonomy third.
 | Market data (Alpha Vantage): quotes, daily history, FX, with provenance and no trading path | ✅ implemented | `src/routes/nexus/market.ts` |
 | Isolated code sandbox with guardrails | ✅ implemented | `src/lib/sandbox-exec.ts` |
 | Memory store with search, editable and deletable | ✅ implemented | `src/routes/nexus/memory.ts` |
-| Voice: STT, TTS, English + Nepali, push-to-talk, interruptible playback | ✅ implemented | `nexus-ui/src/hooks/use-voice.ts` |
+| Voice: STT + TTS as one shared engine, English + Nepali, push-to-talk, conversation mode, interruptible playback | ✅ implemented | `nexus-ui/src/hooks/use-voice.ts`, `nexus-ui/src/lib/speech.ts` |
 | Trading workspace — mathematical scenarios, optional real **delayed** quotes, no order path | ✅ implemented | `nexus-ui/src/pages/trading.tsx` |
 | 2050 HUD: energy core, glass panels, boot sequence, low-resource + reduced-motion modes | ✅ implemented | `nexus-ui/src/components/hud/` |
 
@@ -254,8 +254,9 @@ and approval flow, with its own role prompt, task history and status.
 ## 9. Testing
 
 ```bash
-pnpm --filter @workspace/api-server run test    # 27 tests: engine + agent runtime
 pnpm run test                                   # everything
+pnpm --filter @workspace/api-server run test    # 70 tests: engine, agent runtime, market data, news
+pnpm --filter @workspace/nexus-ui run test      # 52 tests: speech helpers, voice engine, chat voice output
 ```
 
 The engine suite runs the real adapters against a stubbed `fetch`, covering
@@ -264,9 +265,46 @@ responses, multimodal translation and credential hygiene. The runtime suite runs
 planning, authorization, execution, verification, loop detection, concurrency
 and cancellation against an in-memory store.
 
+The UI suite runs under jsdom with fake `speechSynthesis` and
+`SpeechRecognition` implementations (`src/test/speech-harness.ts`) and covers:
+sentence-aware chunking that never drops content, voice selection and missing
+Nepali voices, chunked playback, cancellation, duplicate suppression, transcript
+de-duplication, microphone errors, and an end-to-end check that the **chat page
+speaks a completed response exactly once**.
+
 ---
 
-## 10. Known limitations
+## 10. Voice: how it fits together
+
+Voice input and voice output are **independent switches**. Both are owned by a
+single `VoiceProvider` mounted once in `App.tsx`, so every page shares one
+recogniser and one speech queue.
+
+* `useVoice()` — the shared engine. Speech output is gated on the **Voice
+  Output** toggle, never on the microphone being on.
+* `lib/speech.ts` — pure helpers: `cleanForSpeech` (Markdown → speakable prose),
+  `splitForSpeech` (sentence-aware chunking, nothing truncated), `selectVoice`.
+* `components/hud/voice-indicator.tsx` — `VoiceIndicator` (microphone) and
+  `VoiceOutputBadge` (speakers).
+
+Controls live in **Settings → Voice** and in the header/chat panel: Voice Output
+on/off, Voice Conversation Mode (hands-free), Spoken Navigation, output voice
+picker, speech rate and pitch, and a **Test Voice Output** button that works even
+while output is switched off.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| NEXUS replies in text but never speaks | Voice Output is off — click the speaker badge in the header (it shows `voice off`). |
+| The Test Voice button is silent | The browser has no speech synthesis, or the OS output device is muted. Settings shows `Speech Synthesis: UNAVAILABLE` in that case. |
+| Nepali replies are read oddly | No `ne-NP` voice is installed on the device. Settings says so explicitly instead of pretending otherwise. |
+| The microphone button does nothing | Speech recognition needs Chrome or Edge on a secure origin, plus microphone permission. Settings shows `Speech Recognition: UNSUPPORTED` when the API is missing. |
+| NEXUS stops mid-sentence | Pressing the push-to-talk button interrupts playback by design; so does switching Voice Output off. |
+
+---
+
+## 11. Known limitations
 
 * Agent run telemetry (token/latency counters) is process-local and resets on
   restart; run history itself is durable in Postgres.
@@ -275,5 +313,13 @@ and cancellation against an in-memory store.
   intentionally not implemented.
 * Streaming fallback is only possible before the first token is emitted (by
   design — see §3).
-* Market data integration is deliberately absent; the Trading workspace is a
-  risk calculator only.
+* Market data is real (Alpha Vantage) but **delayed**, and there is deliberately
+  no order path anywhere: `liveTradingEnabled` is hard-coded `false` and the
+  Trading workspace cannot place a trade.
+* Voice quality depends on the voices installed in the operating system. Nepali
+  text-to-speech works only where a `ne-NP` voice exists, and browser support for
+  Nepali **speech recognition** is rare (Chrome/Edge generally ship none); NEXUS
+  states this limitation rather than failing silently.
+* Automated voice tests use mocked browser speech APIs. Real microphone and
+  speaker behaviour can only be confirmed in a supported browser on a device
+  with audio hardware.

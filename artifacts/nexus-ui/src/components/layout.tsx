@@ -10,7 +10,7 @@ import {
 import { useGetAgentStatus } from '@workspace/api-client-react';
 import { useLangContext } from '@/hooks/use-language';
 import { useVoice } from '@/hooks/use-voice';
-import { VoiceIndicator } from '@/components/hud/voice-indicator';
+import { VoiceIndicator, VoiceOutputBadge } from '@/components/hud/voice-indicator';
 import { NotificationsCenter } from '@/components/hud/notifications-center';
 import { ParticleSystem } from '@/components/hud/particles';
 import { BootSequence } from '@/components/hud/boot-sequence';
@@ -48,28 +48,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { data: agentStatus } = useGetAgentStatus({ query: { refetchInterval: 5000, queryKey: ['agents-status-nav'] } });
   const activeAgents = agentStatus?.filter((a: any) => a.status === 'active').length || 0;
 
-  const voice = useVoice({
-    wakeWord: 'nexus',
-    lang: lang === 'ne' ? 'ne-NP' : 'en-US',
-    ttsEnabled: true,
-    onTranscript: (text) => {
-      const lower = text.toLowerCase();
-      const navigate = (path: string) => {
-        window.location.href = `${import.meta.env.BASE_URL.replace(/\/$/, '')}${path}`;
-      };
-      if (lower.includes('chat') || lower.includes('comms')) navigate('/chat');
-      else if (lower.includes('memory') || lower.includes('स्मृति')) navigate('/memory');
-      else if (lower.includes('agent')) navigate('/agents');
-      else if (lower.includes('sandbox') || lower.includes('code') && !lower.includes('coding')) navigate('/sandbox');
-      else if (lower.includes('vision') || lower.includes('camera')) navigate('/vision');
-      else if (lower.includes('coding') || lower.includes('build')) navigate('/coding');
-      else if (lower.includes('task')) navigate('/tasks');
-      else if (lower.includes('research')) navigate('/research');
-      else if (lower.includes('trading') || lower.includes('risk')) navigate('/trading');
-      else if (lower.includes('setting')) navigate('/settings');
-      else if (lower.includes('home') || lower.includes('dashboard') || lower.includes('hud')) navigate('/');
-    }
-  });
+  // Voice routing lives in the provider now (see hooks/use-voice.ts): a
+  // transcript previously triggered a full page reload here, which threw away
+  // all in-flight state. The provider navigates client-side instead.
+  const voice = useVoice();
 
   const navItems = [
     { href: '/',         icon: Activity,      label: t.hud,      group: 'core' },
@@ -223,18 +205,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
           {/* Notifications */}
           <NotificationsCenter />
 
-          {/* Voice */}
+          {/* Voice input (microphone) */}
           <VoiceIndicator
             state={voice.state}
             wakeWordDetected={voice.wakeWordDetected}
             transcript={voice.transcript}
-            enabled={voice.enabled}
-            onToggle={voice.toggle}
-            supported={voice.supported}
+            enabled={voice.sttEnabled}
+            onToggle={voice.toggleMic}
+            supported={voice.sttSupported}
             errorKind={voice.errorKind}
             onStopSpeaking={voice.stopSpeaking}
             compact
           />
+
+          {/* Voice output — a separate switch from the microphone. */}
+          <div className="hidden sm:block">
+            <VoiceOutputBadge
+              enabled={voice.ttsEnabled}
+              supported={voice.ttsSupported}
+              speaking={voice.isSpeaking}
+              onToggle={() => voice.setTtsEnabled(!voice.ttsEnabled)}
+              onStop={voice.stopSpeaking}
+            />
+          </div>
 
           <div className="h-4 w-px bg-primary/20 hidden sm:block" />
           <Clock />
@@ -265,8 +258,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <span className="text-emerald-500">{t.secureNet}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>VOICE</span>
-                  <span className={voice.enabled ? 'text-primary' : 'text-primary/20'}>{voice.enabled ? 'ON' : 'OFF'}</span>
+                  <span>MIC</span>
+                  <span className={voice.sttEnabled ? 'text-primary' : 'text-primary/20'}>{voice.sttEnabled ? 'ON' : 'OFF'}</span>
                 </div>
               </div>
             )}

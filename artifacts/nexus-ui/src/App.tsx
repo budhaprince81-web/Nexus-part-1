@@ -13,6 +13,7 @@ import Tasks from '@/pages/tasks';
 import Research from '@/pages/research';
 import Trading from '@/pages/trading';
 import { LangProvider } from '@/hooks/use-language';
+import { VoiceProvider } from '@/hooks/use-voice';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,7 +64,12 @@ function App() {
     <LangProvider>
       <QueryClientProvider client={queryClient}>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <Router />
+          {/* One voice engine for the whole shell: a single recogniser and a
+              single speech queue, so pages can never fight over the mic or
+              cancel each other's speech. */}
+          <VoiceProvider>
+            <Router />
+          </VoiceProvider>
         </WouterRouter>
       </QueryClientProvider>
     </LangProvider>
