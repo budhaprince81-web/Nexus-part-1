@@ -71,3 +71,6 @@ nexus-workspace/
 
 # Local tooling binaries downloaded during environment setup
 /bin/
+
+# Local scratch logs from development sessions
+.nexus-logs/

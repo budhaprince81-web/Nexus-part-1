@@ -10,7 +10,8 @@ assistant, isolated code execution, memory, and real-time telemetry.
 - `pnpm --filter @workspace/api-server run dev` — API server + SSE (port 8080)
 - `pnpm --filter @workspace/nexus-ui run dev` — HUD frontend (port 3000)
 - `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run test` — engine + agent-runtime + lib test suites (`node --test`)
+- `pnpm run test` — API suites (`node --test`: engine, agent runtime, market, news)
+  plus the UI suite (`vitest`, jsdom, fake Web Speech APIs)
 - `pnpm run build` — production build of every artifact
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks from `lib/api-spec/openapi.yaml`
@@ -61,7 +62,8 @@ the provider counts as failed.
 | HUD components | `artifacts/nexus-ui/src/components/hud/` |
 | DB schema | `lib/db/src/schema/nexus.ts` |
 | OpenAPI spec | `lib/api-spec/openapi.yaml` |
-| Voice hook | `artifacts/nexus-ui/src/hooks/use-voice.ts` |
+| Voice engine (shared provider: STT + TTS) | `artifacts/nexus-ui/src/hooks/use-voice.ts` |
+| Speech helpers (chunking, voice selection) | `artifacts/nexus-ui/src/lib/speech.ts` |
 | Optional Python service | `artifacts/api-server/fastapi/` |
 
 ## Architecture decisions

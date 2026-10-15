@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { CyberPanel, CyberInput, CyberButton } from '@/components/ui/cyber';
-import { Send, Plus, Trash2, Cpu, Mic, MicOff } from 'lucide-react';
+import { Send, Plus, Trash2, Cpu, Mic, MicOff, Volume2, VolumeX, Square, AlertTriangle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
   useListAnthropicConversations, getListAnthropicConversationsQueryKey,
@@ -38,15 +38,14 @@ export default function Chat() {
     { query: { enabled: !!activeConvId, queryKey: getListAnthropicMessagesQueryKey(activeConvId!) } }
   );
 
-  // Voice — fills input from mic
-  const voice = useVoice({
-    wakeWord: 'nexus',
-    lang: lang === 'ne' ? 'ne-NP' : 'en-US',
-    ttsEnabled: true,
-    onTranscript: (text) => {
-      setInput(text);
-    }
-  });
+  // Voice is a single shared engine owned by <VoiceProvider>. Speech output is
+  // deliberately NOT gated on the microphone being on — that coupling is what
+  // silently disabled every spoken reply.
+  const voice = useVoice();
+  const {
+    speak, stopSpeaking, subscribeTranscript, conversationMode, ttsEnabled,
+    setTtsEnabled, isSpeaking, pauseListening, resumeListening,
+  } = voice;
 
   useEffect(() => {
     if (conversations && conversations.length > 0 && !activeConvId) {
@@ -77,23 +76,27 @@ export default function Chat() {
     });
   };
 
-  const handleSend = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!input.trim() || !activeConvId || isStreaming) return;
+  const sendMessage = useCallback(async (messageContent: string) => {
+    const content = messageContent.trim();
+    if (!content || !activeConvId || isStreaming) return;
 
-    const messageContent = input;
     setInput('');
     setIsStreaming(true);
     setStreamingMessage('');
     setStreamError(null);
     setProviderMeta(null);
+    // Stop the recogniser while the model works, so NEXUS cannot transcribe its
+    // own spoken reply and loop forever. It is resumed once the turn is done.
+    pauseListening();
+
+    let fullResponse = '';
 
     try {
       const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
       const res = await fetch(`${BASE}/api/anthropic/conversations/${activeConvId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: messageContent }),
+        body: JSON.stringify({ content }),
       });
 
       if (!res.ok) {
@@ -113,7 +116,6 @@ export default function Chat() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let fullResponse = '';
       let buffer = '';
 
       // Server-Sent Events are delimited by a blank line. A network chunk can
@@ -167,11 +169,8 @@ export default function Chat() {
         if (done) break;
       }
 
-      // Speak the response with TTS
-      if (fullResponse && voice.enabled) {
-        // Truncate for TTS to avoid very long reads
-        const ttsText = fullResponse.slice(0, 200);
-        voice.speak(ttsText, lang === 'ne' ? 'ne-NP' : 'en-US');
+      if (!fullResponse.trim()) {
+        setStreamError('The provider returned an empty response. Nothing to speak.');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Streaming failed';
@@ -181,15 +180,41 @@ export default function Chat() {
       setIsStreaming(false);
       setStreamingMessage('');
       queryClient.invalidateQueries({ queryKey: getListAnthropicMessagesQueryKey(activeConvId) });
-    }
-  };
 
-  // Auto-send when voice transcript comes in and PTT is done
-  useEffect(() => {
-    if (input && voice.state === 'idle' && !isStreaming) {
-      // small delay so user can edit
+      if (fullResponse.trim()) {
+        // Resume listening first: when speech output is on, the synthesiser
+        // takes over the mic again and hands it back when it finishes. That is
+        // what makes the hands-free loop work without the mic hearing NEXUS.
+        resumeListening();
+        // The complete answer is spoken — cleanForSpeech() strips Markdown and
+        // splitForSpeech() queues every sentence, so nothing is truncated.
+        speak(fullResponse, lang === 'ne' ? 'ne-NP' : 'en-US');
+      } else {
+        resumeListening();
+      }
     }
-  }, [input, voice.state, isStreaming]);
+  }, [activeConvId, isStreaming, lang, pauseListening, queryClient, resumeListening, speak]);
+
+  // Keep the latest sender reachable from the stable transcript listener.
+  const sendRef = useRef(sendMessage);
+  sendRef.current = sendMessage;
+
+  useEffect(() => {
+    return subscribeTranscript((text) => {
+      if (conversationMode) {
+        // Hands-free: a finalised utterance goes straight to the model.
+        void sendRef.current(text);
+      } else {
+        // Manual mode: fill the composer so the user can review and edit.
+        setInput((previous) => (previous.trim() ? `${previous.trim()} ${text}` : text));
+      }
+    });
+  }, [subscribeTranscript, conversationMode]);
+
+  const handleSend = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    void sendMessage(input);
+  };
 
   return (
     <div className="h-full flex flex-col md:flex-row gap-4">
@@ -210,7 +235,7 @@ export default function Chat() {
                 "p-2.5 border cursor-pointer group flex justify-between items-center transition-all",
                 activeConvId === c.id
                   ? 'border-primary bg-primary/10 text-primary shadow-[0_0_10px_rgba(0,212,255,0.1)]'
-                  : 'border-primary/15 bg-primary/3 hover:border-primary/40 text-primary/60'
+                  : 'border-primary/15 bg-primary/5 hover:border-primary/40 text-primary/60'
               )}
             >
               <span className="font-mono text-xs truncate uppercase tracking-wider">{c.title}</span>
@@ -231,15 +256,15 @@ export default function Chat() {
       {/* Main Chat */}
       <CyberPanel className="flex-1 flex flex-col relative overflow-hidden h-full">
         {activeConvId && (
-          <div className="flex items-center justify-between border-b border-primary/15 pb-2 mb-2 shrink-0">
-            <span className="font-mono text-[9px] uppercase tracking-widest text-primary/40">
+          <div className="flex items-center justify-between border-b border-primary/15 pb-2 mb-2 shrink-0 gap-2">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-primary/40 truncate">
               {providerMeta
                 ? `Answered by ${providerMeta.providerLabel}`
                 : isStreaming
                   ? 'Awaiting provider…'
                   : 'Provider auto-selected per request'}
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {providerMeta?.fallbackUsed && (
                 <span className="font-mono text-[9px] uppercase text-amber-400 border border-amber-500/40 px-1.5 py-0.5">
                   fallback
@@ -249,6 +274,36 @@ export default function Chat() {
                 <span className="font-mono text-[9px] text-primary/50 truncate max-w-[160px]">
                   {providerMeta.model}
                 </span>
+              )}
+              {/* Voice output state — always visible, so "why is it silent?"
+                  never needs guessing. */}
+              <button
+                type="button"
+                onClick={() => setTtsEnabled(!ttsEnabled)}
+                aria-pressed={ttsEnabled}
+                title={
+                  ttsEnabled
+                    ? 'Voice output is ON — NEXUS speaks every reply'
+                    : 'Voice output is OFF — click to make NEXUS speak replies'
+                }
+                className={cn(
+                  'flex items-center gap-1 px-2 py-1 border font-mono text-[9px] uppercase tracking-wider transition-all',
+                  ttsEnabled
+                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+                    : 'border-primary/20 text-primary/40 hover:border-primary/50',
+                )}
+              >
+                {ttsEnabled ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+                <span className="hidden sm:inline">{ttsEnabled ? 'voice on' : 'voice off'}</span>
+              </button>
+              {isSpeaking && (
+                <button
+                  type="button"
+                  onClick={stopSpeaking}
+                  className="flex items-center gap-1 px-2 py-1 border border-amber-400/50 bg-amber-400/10 font-mono text-[9px] uppercase tracking-wider text-amber-400"
+                >
+                  <Square className="w-3 h-3" /> stop
+                </button>
               )}
             </div>
           </div>
@@ -312,13 +367,38 @@ export default function Chat() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Voice waveform when listening */}
-            {(voice.state === 'listening') && (
+            {/* Voice waveform when listening or speaking */}
+            {(voice.state === 'listening' || isSpeaking) && (
               <div className="px-4 py-2 border-t border-primary/10 bg-primary/5">
                 <VoiceWaveform active bars={32} />
-                <div className="text-center font-mono text-xs text-primary animate-pulse mt-1 uppercase tracking-widest">
-                  {t.listening}
+                <div className={cn(
+                  'text-center font-mono text-xs mt-1 uppercase tracking-widest',
+                  isSpeaking ? 'text-emerald-400' : 'text-primary animate-pulse',
+                )}>
+                  {isSpeaking
+                    ? (lang === 'ne' ? 'बोल्दैछु...' : 'Speaking — press the mic to interrupt')
+                    : (voice.listeningPaused ? 'Mic paused' : t.listening)}
                 </div>
+              </div>
+            )}
+
+            {/* Honest voice diagnostics: a missing Nepali voice, a synthesis
+                failure or a denied microphone is stated, never swallowed. */}
+            {(voice.ttsNotice || voice.ttsError || voice.errorKind) && (
+              <div className="mx-3 mt-1 flex items-start gap-2 border border-amber-500/40 bg-amber-500/5 px-3 py-2 shrink-0">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                <span className="font-mono text-[10px] text-amber-200/90 leading-snug">
+                  {voice.ttsError
+                    || (voice.errorKind === 'permission-denied'
+                      ? 'Microphone permission was denied. Allow microphone access in your browser to use voice input — text chat still works.'
+                      : voice.errorKind === 'unsupported'
+                        ? 'This browser does not support speech recognition. Use Chrome or Edge for voice input.'
+                        : voice.errorKind === 'no-microphone'
+                          ? 'No microphone was detected.'
+                          : voice.errorKind === 'network'
+                            ? 'The speech recognition service is unreachable. Text chat still works.'
+                            : voice.ttsNotice)}
+                </span>
               </div>
             )}
 
@@ -326,22 +406,23 @@ export default function Chat() {
               <CyberInput
                 value={input}
                 onChange={e => setInput(e.target.value)}
-                placeholder={t.transmit}
+                placeholder={conversationMode ? 'Voice conversation mode — speak, or type…' : t.transmit}
                 disabled={isStreaming}
                 className="h-11 flex-1 text-sm"
                 autoFocus
               />
-              {/* Push-to-talk */}
+              {/* Push-to-talk: press and speak. It also interrupts playback. */}
               <button
                 type="button"
                 onMouseDown={voice.pushToTalk}
+                aria-label="Push to talk"
                 className={cn(
                   "h-11 w-11 border flex items-center justify-center shrink-0 transition-all",
                   voice.state === 'listening'
                     ? 'border-primary bg-primary/20 text-primary shadow-[0_0_15px_rgba(0,212,255,0.4)]'
                     : 'border-primary/30 text-primary/50 hover:border-primary hover:text-primary'
                 )}
-                title="Push to Talk"
+                title="Push to talk (hold and speak)"
               >
                 {voice.state === 'listening' ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
               </button>

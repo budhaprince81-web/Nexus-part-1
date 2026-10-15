@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, Volume2, Square, AlertTriangle } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, Square, AlertTriangle } from 'lucide-react';
 import type { VoiceErrorKind, VoiceState } from '@/hooks/use-voice';
 import { cn } from '@/lib/utils';
 
@@ -24,7 +24,73 @@ const ERROR_TEXT: Record<string, string> = {
   'no-microphone': 'No microphone detected.',
   unsupported: 'This browser does not support speech recognition.',
   network: 'Speech service unreachable. Text input still works.',
+  'tts-unsupported': 'This browser does not support speech synthesis (voice output).',
+  'tts-failed': 'Speech synthesis failed. Check your system audio output.',
 };
+
+/** Props for the standalone voice-output badge used in the HUD. */
+interface VoiceOutputBadgeProps {
+  enabled: boolean;
+  supported: boolean;
+  speaking: boolean;
+  onToggle: () => void;
+  onStop: () => void;
+}
+
+/**
+ * Explicit, always-visible voice-output control.
+ *
+ * Voice input and voice output are separate switches: turning the microphone on
+ * must never be a precondition for NEXUS speaking, which is exactly the
+ * coupling that made spoken replies silently fail.
+ */
+export function VoiceOutputBadge({
+  enabled,
+  supported,
+  speaking,
+  onToggle,
+  onStop,
+}: VoiceOutputBadgeProps) {
+  if (!supported) {
+    return (
+      <span
+        className="font-mono text-[10px] uppercase tracking-wider text-destructive/70 border border-destructive/30 px-2 py-1"
+        title="This browser has no speech synthesis support"
+      >
+        TTS N/A
+      </span>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={enabled}
+        title={enabled ? 'Voice output is ON' : 'Voice output is OFF'}
+        className={cn(
+          'flex items-center gap-1 px-2 py-1 border font-mono text-[10px] uppercase tracking-wider transition-all',
+          enabled
+            ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
+            : 'border-primary/20 text-primary/40 hover:border-primary/50',
+        )}
+      >
+        {enabled ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+        {enabled ? 'ON' : 'OFF'}
+      </button>
+      {speaking && (
+        <button
+          type="button"
+          onClick={onStop}
+          title="Stop speaking"
+          className="flex items-center gap-1 px-2 py-1 border border-amber-400/50 bg-amber-400/10 font-mono text-[10px] uppercase tracking-wider text-amber-400"
+        >
+          <Square className="w-3 h-3" /> STOP
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function VoiceIndicator({
   state,

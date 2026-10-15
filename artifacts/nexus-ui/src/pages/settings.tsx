@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CyberPanel, CyberBadge, CyberButton } from '@/components/ui/cyber';
-import { Settings as SettingsIcon, Shield, Database, Activity, Globe, Mic, Volume2, Gauge, Sparkles, Server } from 'lucide-react';
+import { Settings as SettingsIcon, Shield, Database, Activity, Globe, Mic, Volume2, Gauge, Sparkles, Server, Square, AlertTriangle } from 'lucide-react';
 import { ProviderStatusPanel } from '@/components/hud/provider-status';
 import { useUiPrefs } from '@/hooks/use-ui-prefs';
 import { useGetTelemetry, getGetTelemetryQueryKey } from '@workspace/api-client-react';
@@ -8,20 +8,27 @@ import { useLangContext } from '@/hooks/use-language';
 import { useVoice } from '@/hooks/use-voice';
 import { VoiceIndicator } from '@/components/hud/voice-indicator';
 import { cn } from '@/lib/utils';
+import { hasVoiceForLanguage } from '@/lib/speech';
 
 export default function Settings() {
   const { data: telemetry } = useGetTelemetry({ query: { queryKey: getGetTelemetryQueryKey() } });
   const { t, lang, setLanguage } = useLangContext();
-  const [ttsEnabled, setTtsEnabled] = useState(true);
-  const [voiceRate, setVoiceRate] = useState(0.95);
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
   const { prefs, update } = useUiPrefs();
 
-  const voice = useVoice({ wakeWord: 'nexus', lang: lang === 'ne' ? 'ne-NP' : 'en-US', ttsEnabled });
+  // Everything voice-related now lives in the shared provider, so a change here
+  // immediately affects the chat page (it previously kept its own private copy).
+  const voice = useVoice();
+  const {
+    ttsEnabled, setTtsEnabled, voiceRate, setVoiceRate, voicePitch, setVoicePitch,
+    availableVoices, selectedVoiceURI, setSelectedVoiceURI, ttsSupported,
+    sttSupported, ttsNotice, ttsError, conversationMode, setConversationMode,
+    commandMode, setCommandMode,
+  } = voice;
 
-  const testTts = () => {
-    voice.speak(lang === 'ne' ? 'नमस्ते, म NEXUS हुँ। तपाईंको AI सहायक।' : 'Hello. I am NEXUS, your AI operating system. All systems are online.');
-  };
+  const nepalVoiceInstalled = hasVoiceForLanguage(voice.allVoices, 'ne');
+
+  const testTts = () => voice.testVoice();
 
   return (
     <div className="max-w-5xl mx-auto h-full flex flex-col gap-5">
@@ -84,45 +91,193 @@ export default function Settings() {
               state={voice.state}
               wakeWordDetected={voice.wakeWordDetected}
               transcript={voice.transcript}
-              enabled={voice.enabled}
-              onToggle={voice.toggle}
-              supported={voice.supported}
+              enabled={voice.sttEnabled}
+              onToggle={voice.toggleMic}
+              supported={voice.sttSupported}
               errorKind={voice.errorKind}
               onStopSpeaking={voice.stopSpeaking}
             />
+            <p className="font-mono text-[10px] text-primary/40 text-center max-w-[260px] leading-snug">
+              The round button controls the <span className="text-primary/70">microphone</span>.
+              Spoken replies are controlled by Voice Output below — they are independent.
+            </p>
           </div>
 
           <div className="space-y-3 font-mono text-xs border-t border-primary/10 pt-3">
+            {[
+              {
+                label: 'Speech Recognition',
+                value: sttSupported ? 'AVAILABLE' : 'UNSUPPORTED',
+                good: sttSupported,
+              },
+              {
+                label: 'Speech Synthesis',
+                value: ttsSupported ? 'AVAILABLE' : 'UNSUPPORTED',
+                good: ttsSupported,
+              },
+            ].map(({ label, value, good }) => (
+              <div key={label} className="flex justify-between items-center py-1.5 px-2">
+                <span className="text-primary/60 uppercase">{label}</span>
+                <span className={good ? 'text-emerald-400' : 'text-destructive'}>{value}</span>
+              </div>
+            ))}
+
             <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
               <span className="text-primary/60 uppercase">Wake Word</span>
               <div className="flex items-center gap-2">
                 <span className="text-primary font-bold">"Nexus"</span>
                 <button
                   onClick={() => setWakeWordEnabled(p => !p)}
+                  aria-pressed={wakeWordEnabled}
+                  aria-label="Toggle wake word"
                   className={cn("w-8 h-4 border transition-all", wakeWordEnabled ? 'border-primary bg-primary/30' : 'border-primary/20 bg-primary/5')}
                 />
               </div>
             </div>
+
             <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
-              <span className="text-primary/60 uppercase">TTS (Text-to-Speech)</span>
+              <span className="text-primary/60 uppercase">Voice Output (TTS)</span>
               <button
-                onClick={() => setTtsEnabled(p => !p)}
+                onClick={() => setTtsEnabled(!ttsEnabled)}
+                aria-pressed={ttsEnabled}
                 className={cn("px-3 py-1 border text-[10px] uppercase tracking-wider transition-all",
                   ttsEnabled ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-primary/20 text-primary/40')}
               >
                 {ttsEnabled ? 'ON' : 'OFF'}
               </button>
             </div>
+
+            <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
+              <span className="text-primary/60 uppercase">Voice Conversation Mode</span>
+              <button
+                onClick={() => setConversationMode(!conversationMode)}
+                aria-pressed={conversationMode}
+                title="Hands-free: a finished sentence is sent to the model automatically"
+                className={cn("px-3 py-1 border text-[10px] uppercase tracking-wider transition-all",
+                  conversationMode ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-primary/20 text-primary/40')}
+              >
+                {conversationMode ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
+            <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-primary/60 uppercase">Spoken Navigation</span>
+                <span className="text-[9px] text-primary/30">
+                  Requires "Nexus" or "open …". Off means transcripts only fill the composer.
+                </span>
+              </div>
+              <button
+                onClick={() => setCommandMode(!commandMode)}
+                aria-pressed={commandMode}
+                className={cn("px-3 py-1 border text-[10px] uppercase tracking-wider transition-all shrink-0",
+                  commandMode ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400' : 'border-primary/20 text-primary/40')}
+              >
+                {commandMode ? 'ON' : 'OFF'}
+              </button>
+            </div>
+
             <div className="flex justify-between items-center py-1.5 hover:bg-primary/5 px-2 transition-colors">
               <span className="text-primary/60 uppercase">STT Language</span>
               <span className="text-primary">{lang === 'ne' ? 'ne-NP' : 'en-US'}</span>
             </div>
+
+            {/* Voice picker: only voices installed on this device are offered. */}
+            <div className="flex flex-col gap-1 py-1.5 px-2">
+              <div className="flex justify-between items-center">
+                <span className="text-primary/60 uppercase">Output Voice</span>
+                <span className="text-primary/40 text-[9px] uppercase">
+                  {availableVoices.length} for {lang === 'ne' ? 'ne-NP' : 'en-US'}
+                </span>
+              </div>
+              <select
+                value={selectedVoiceURI}
+                onChange={(e) => setSelectedVoiceURI(e.target.value)}
+                aria-label="Voice output voice"
+                className="w-full bg-background border border-primary/25 text-primary font-mono text-[11px] px-2 py-1.5"
+              >
+                <option value="">Automatic (best available)</option>
+                {availableVoices.map((v) => (
+                  <option key={v.voiceURI} value={v.voiceURI}>
+                    {v.name} — {v.lang}
+                  </option>
+                ))}
+              </select>
+              {availableVoices.length === 0 && (
+                <span className="text-amber-400/80 text-[9px] leading-snug">
+                  No voice for this language is installed on this device.
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1 py-1.5 px-2">
+              <div className="flex justify-between">
+                <span className="text-primary/60 uppercase">Speech Rate</span>
+                <span className="text-primary">{voiceRate.toFixed(2)}×</span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={1.6}
+                step={0.05}
+                value={voiceRate}
+                onChange={(e) => setVoiceRate(Number(e.target.value))}
+                aria-label="Speech rate"
+                className="w-full accent-cyan-400"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1 py-1.5 px-2">
+              <div className="flex justify-between">
+                <span className="text-primary/60 uppercase">Pitch</span>
+                <span className="text-primary">{voicePitch.toFixed(2)}</span>
+              </div>
+              <input
+                type="range"
+                min={0.5}
+                max={1.6}
+                step={0.05}
+                value={voicePitch}
+                onChange={(e) => setVoicePitch(Number(e.target.value))}
+                aria-label="Speech pitch"
+                className="w-full accent-cyan-400"
+              />
+            </div>
           </div>
 
-          <CyberButton onClick={testTts} className="text-xs py-2">
-            <Volume2 className="w-4 h-4 mr-2" />
-            {lang === 'ne' ? 'TTS परीक्षण गर्नुस्' : 'Test Voice Output'}
-          </CyberButton>
+          {/* Honest language support: never claim a Nepali voice exists when it
+              does not. */}
+          {lang === 'ne' && !nepalVoiceInstalled && (
+            <div className="border border-amber-500/40 bg-amber-500/5 px-3 py-2 flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+              <span className="font-mono text-[10px] text-amber-200/90 leading-snug">
+                No Nepali (ne-NP) voice is installed on this device, so Nepali replies
+                will be read with the closest available voice and may sound wrong.
+                Nepali <span className="text-amber-300">speech recognition</span> is also
+                browser-dependent — Chrome and Edge generally do not ship a ne-NP
+                recogniser. English works everywhere.
+              </span>
+            </div>
+          )}
+
+          {(ttsError || ttsNotice) && (
+            <div className="border border-primary/25 bg-primary/5 px-3 py-2 font-mono text-[10px] text-primary/70 leading-snug">
+              {ttsError ?? ttsNotice}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <CyberButton onClick={testTts} className="text-xs py-2 flex-1" disabled={!ttsSupported}>
+              <Volume2 className="w-4 h-4 mr-2" />
+              {lang === 'ne' ? 'TTS परीक्षण गर्नुस्' : 'Test Voice Output'}
+            </CyberButton>
+            {voice.isSpeaking && (
+              <CyberButton onClick={voice.stopSpeaking} className="text-xs py-2">
+                <Square className="w-4 h-4 mr-2" />
+                Stop
+              </CyberButton>
+            )}
+          </div>
         </CyberPanel>
 
         {/* Multi-provider AI configuration (live status + real telemetry) */}
